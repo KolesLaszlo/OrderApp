@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TableFlow – Restaurant Ordering</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, onSnapshot, query, where, orderBy, serverTimestamp }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    window.__firebaseModules = { initializeApp, getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, onSnapshot, query, where, orderBy, serverTimestamp, getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged };
+    window.__firebaseReady = true;
+    window.dispatchEvent(new Event('firebaseReady'));
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --brand: #C8873A; --brand-dark: #9E621E; --brand-light: #F5E6D3;
+      --surface: #FAFAF8; --surface2: #F2F0EC; --text: #1A1714; --text2: #6B6560;
+      --border: #E8E4DE; --danger: #D94F3D; --success: #3DAB6E; --warning: #E8A930;
+      --radius: 16px; --shadow: 0 4px 24px rgba(0,0,0,0.08); --shadow-lg: 0 12px 48px rgba(0,0,0,0.14);
+    }
+    html, body, #root { height: 100%; width: 100%; background: var(--surface); color: var(--text); font-family: 'DM Sans', sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+    ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:none; } }
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+    @keyframes slideIn { from { transform:translateX(100%); } to { transform:none; } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .fade-up { animation: fadeUp .4s ease both; }
+    .fade-in { animation: fadeIn .3s ease both; }
+    .slide-in { animation: slideIn .35s cubic-bezier(.25,.46,.45,.94) both; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useContext, createContext, useRef, useCallback } = React;
+
+function getFirebase() { return window.__firebaseModules || null; }
+const ThemeContext = createContext(null);
+function useTheme() { return useContext(ThemeContext); }
+const AppContext = createContext(null);
+function useApp() { return useContext(AppContext); }
+const fmt = (n) => `${parseFloat(n).toFixed(2)} \u20AC`;
+
+// ── UI Primitives ──────────────────────────────────────────────────────────────
+function Btn({ children, onClick, variant='primary', size='md', disabled, style, icon }) {
+  const theme = useTheme();
+  const styles = {
+    primary: { background: theme?.brand || 'var(--brand)', color: '#fff', border: 'none' },
+    secondary: { background: 'transparent', color: theme?.brand || 'var(--brand)', border: `2px solid ${theme?.brand || 'var(--brand)'}` },
+    ghost: { background: 'var(--surface2)', color: 'var(--text)', border: 'none' },
+    danger: { background: 'var(--danger)', color: '#fff', border: 'none' },
+    success: { background: 'var(--success)', color: '#fff', border: 'none' },
+  };
+  const sizes = {
+    sm: { padding: '8px 16px', fontSize: '13px', borderRadius: '10px' },
+    md: { padding: '14px 24px', fontSize: '15px', borderRadius: '14px' },
+    lg: { padding: '18px 32px', fontSize: '17px', borderRadius: '16px' },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      ...styles[variant], ...sizes[size],
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+      fontFamily: 'DM Sans', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.5 : 1, transition: 'all .2s', width: '100%', ...style
+    }}>{icon && <span>{icon}</span>}{children}</button>
+  );
+}
+
+function Input({ label, value, onChange, type='text', placeholder, error }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {label && <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)', marginBottom: 6 }}>{label}</div>}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        style={{ width: '100%', padding: '14px 16px', borderRadius: 12, fontSize: 15, border: `2px solid ${error ? 'var(--danger)' : 'var(--border)'}`, background: '#fff', color: 'var(--text)', outline: 'none', fontFamily: 'DM Sans' }} />
+      {error && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{error}</div>}
+    </div>
+  );
+}
+
+function Card({ children, style, onClick }) {
+  return (
+    <div onClick={onClick} style={{ background: '#fff', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)', border: '1px solid var(--border)', overflow: 'hidden', cursor: onClick ? 'pointer' : 'default', ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Badge({ children, color='brand' }) {
+  const colors = { brand: { bg: 'var(--brand-light)', text: 'var(--brand-dark)' }, success: { bg: '#D4F5E3', text: '#1A7A47' }, warning: { bg: '#FEF3D0', text: '#9A6B00' }, danger: { bg: '#FDEAE8', text: '#9B2617' }, gray: { bg: 'var(--surface2)', text: 'var(--text2)' } };
+  const c = colors[color] || colors.gray;
+  return <span style={{ background: c.bg, color: c.text, padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600 }}>{children}</span>;
+}
+
+function Spinner() {
+  return <div style={{ width: 24, height: 24, border: '3px solid var(--border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />;
+}
+
+function Toast({ message, type, onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, []);
+  const bg = type === 'error' ? 'var(--danger)' : type === 'success' ? 'var(--success)' : '#333';
+  return (
+    <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: bg, color: '#fff', padding: '12px 24px', borderRadius: 12, fontSize: 14, fontWeight: 500, zIndex: 9999, animation: 'fadeUp .3s ease', boxShadow: 'var(--shadow-lg)', maxWidth: '90vw', textAlign: 'center' }}>{message}</div>
+  );
+}
+
+function BottomSheet({ open, onClose, title, children }) {
+  if (!open) return null;
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 500 }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#fff', borderRadius: '24px 24px 0 0', padding: '24px 20px 40px', animation: 'fadeUp .3s ease', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ width: 40, height: 4, background: 'var(--border)', borderRadius: 2, margin: '0 auto 20px' }} />
+        {title && <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>{title}</h3>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+
+// ── Call Waiter FAB ────────────────────────────────────────────────────────────
+function CallWaiterFAB({ table, restaurantId, show }) {
+  const theme = useTheme();
+  const [state, setState] = React.useState('idle'); // 'idle' | 'dialog' | 'called'
+  const [miniToast, setMiniToast] = React.useState(false);
+
+  if (!show) return null;
+
+  function callWaiter() {
+    const calls = LocalDB.get('waiter_calls_' + restaurantId, []);
+    const already = calls.find(c => c.table === table && c.status === 'pending');
+    if (!already) {
+      calls.push({ id: LocalDB.genId(), table, calledAt: new Date().toISOString(), status: 'pending' });
+      LocalDB.set('waiter_calls_' + restaurantId, calls);
+    }
+    setState('called');
+  }
+
+  function handleFABClick() {
+    if (state === 'called') {
+      setMiniToast(true);
+      setTimeout(() => setMiniToast(false), 2500);
+    } else {
+      setState('dialog');
+    }
+  }
+
+  const isCalled = state === 'called';
+
+  return (
+    <React.Fragment>
+      {state === 'dialog' && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div onClick={() => setState('idle')} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+          <div className="fade-up" style={{ position: 'relative', width: '100%', maxWidth: 480, background: '#fff', borderRadius: '24px 24px 0 0', padding: '32px 24px 44px', zIndex: 601 }}>
+            <div style={{ width: 40, height: 4, background: 'var(--border)', borderRadius: 2, margin: '0 auto 24px' }} />
+            <div style={{ fontSize: 48, textAlign: 'center', marginBottom: 12 }}>🛎️</div>
+            <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, fontWeight: 700, textAlign: 'center', marginBottom: 8 }}>Need assistance?</h3>
+            <p style={{ color: 'var(--text2)', fontSize: 15, textAlign: 'center', lineHeight: 1.5, marginBottom: 28 }}>Have any question? We're here for you!</p>
+            <button onClick={callWaiter}
+              style={{ width: '100%', padding: '16px', background: theme.brand || 'var(--brand)', color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              🛎️ Call Waiter
+            </button>
+            <button onClick={() => setState('idle')}
+              style={{ width: '100%', padding: '14px', background: 'var(--surface2)', color: 'var(--text)', border: 'none', borderRadius: 14, fontSize: 15, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {miniToast && (
+        <div className="fade-up" style={{ position: 'fixed', bottom: 96, right: 20, background: '#1A1714', color: '#fff', padding: '10px 16px', borderRadius: 12, fontSize: 13, fontWeight: 500, zIndex: 700, boxShadow: 'var(--shadow-lg)', whiteSpace: 'nowrap' }}>
+          Noted, coming right away! 🏃
+        </div>
+      )}
+      <button onClick={handleFABClick} style={{
+        position: 'fixed', bottom: 24, right: 20, zIndex: 500,
+        width: 56, height: 56, borderRadius: '50%',
+        background: isCalled ? 'var(--success)' : (theme.brand || 'var(--brand)'),
+        color: '#fff', border: 'none', fontSize: 24, cursor: 'pointer',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background .3s',
+      }}>
+        {isCalled ? '🏃' : '🛎️'}
+      </button>
+    </React.Fragment>
+  );
+}
+
+function BackBtn({ onClick, label }) {
+  return (
+    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface2)', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 14, fontWeight: 600, color: 'var(--text2)', cursor: 'pointer', fontFamily: 'DM Sans', whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 16 }}>&#8592;</span>{label || 'Back'}
+    </button>
+  );
+}
+
+function ScreenHeader({ title, onBack, backLabel, right }) {
+  return (
+    <div style={{ padding: '16px 20px', background: '#fff', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, position: 'sticky', top: 0, zIndex: 20 }}>
+      {onBack && <BackBtn onClick={onBack} label={backLabel} />}
+      <h2 style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700, flex: 1 }}>{title}</h2>
+      {right && <div>{right}</div>}
+    </div>
+  );
+}
+
+// ── Mock Data ──────────────────────────────────────────────────────────────────
+const DEFAULT_CONFIG = { restaurantName: 'Bella Vista', tagline: 'Authentic Italian Cuisine', logo: '🍝', brand: '#C8873A', brandDark: '#9E621E', brandLight: '#F5E6D3', adminPassword: 'admin123' };
+const DEFAULT_MENU = [
+  { id: 'c1', category: 'Starters', name: 'Bruschetta al Pomodoro', description: 'Toasted bread with fresh tomatoes, basil & garlic', price: 7.50, emoji: '🍅', available: true },
+  { id: 'c2', category: 'Starters', name: 'Burrata & Prosciutto', description: 'Creamy burrata with aged prosciutto and rocket', price: 12.00, emoji: '🧀', available: true },
+  { id: 'c3', category: 'Starters', name: 'Calamari Fritti', description: 'Lightly fried squid with lemon aioli', price: 10.50, emoji: '🦑', available: true },
+  { id: 'p1', category: 'Pasta', name: 'Spaghetti Carbonara', description: 'Classic Roman pasta with guanciale & pecorino', price: 16.00, emoji: '🍝', available: true },
+  { id: 'p2', category: 'Pasta', name: 'Pappardelle al Ragu', description: 'Slow-cooked beef ragu with wide pasta', price: 18.50, emoji: '🥩', available: true },
+  { id: 'p3', category: 'Pasta', name: 'Risotto ai Funghi', description: 'Arborio rice with porcini mushrooms & truffle oil', price: 19.00, emoji: '🍄', available: true },
+  { id: 'm1', category: 'Mains', name: 'Branzino al Forno', description: 'Oven-baked sea bass with capers & olives', price: 26.00, emoji: '🐟', available: true },
+  { id: 'm2', category: 'Mains', name: 'Tagliata di Manzo', description: '250g sliced sirloin with truffle & arugula', price: 32.00, emoji: '🥩', available: true },
+  { id: 'd1', category: 'Desserts', name: 'Tiramisu della Casa', description: 'House-made classic with mascarpone & espresso', price: 8.00, emoji: '☕', available: true },
+  { id: 'd2', category: 'Desserts', name: 'Panna Cotta', description: 'Vanilla cream with seasonal berry coulis', price: 7.00, emoji: '🍮', available: true },
+  { id: 'dr1', category: 'Drinks', name: 'House Wine (Glass)', description: "Red or white Montepulciano d'Abruzzo", price: 6.50, emoji: '🍷', available: true },
+  { id: 'dr2', category: 'Drinks', name: 'Sparkling Water', description: '500ml San Pellegrino', price: 3.00, emoji: '💧', available: true },
+  { id: 'dr3', category: 'Drinks', name: 'Espresso', description: 'Single or double shot', price: 2.50, emoji: '☕', available: true },
+];
+
+const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'served', 'paid'];
+const statusLabel = { pending: 'Pending', confirmed: 'Confirmed', preparing: 'Preparing', ready: 'Ready!', served: 'Served', paid: 'Paid' };
+const statusColor = { pending: 'warning', confirmed: 'brand', preparing: 'warning', ready: 'success', served: 'gray', paid: 'success' };
+
+class LocalDB {
+  static get(key, def) { try { const v = localStorage.getItem('tf_'+key); return v ? JSON.parse(v) : def; } catch { return def; } }
+  static set(key, val) { try { localStorage.setItem('tf_'+key, JSON.stringify(val)); } catch {} }
+  static genId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+}
+
+// ── Welcome Screen ─────────────────────────────────────────────────────────────
+function WelcomeScreen({ restaurant, table, onGuest, onLogin }) {
+  const theme = useTheme();
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, background: `linear-gradient(160deg, ${theme.brandLight} 0%, #fff 60%)` }}>
+      <div style={{ fontSize: 72, marginBottom: 16 }}>{restaurant.logo}</div>
+      <h1 style={{ fontFamily: 'Playfair Display', fontSize: 32, fontWeight: 700, textAlign: 'center', marginBottom: 8 }}>{restaurant.restaurantName}</h1>
+      <p style={{ color: 'var(--text2)', fontSize: 15, marginBottom: 8, textAlign: 'center' }}>{restaurant.tagline}</p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: theme.brandLight, color: theme.brandDark, padding: '8px 16px', borderRadius: 20, fontSize: 14, fontWeight: 600, marginBottom: 40 }}>
+        <span>🪑</span> Table {table}
+      </div>
+      <div style={{ width: '100%', maxWidth: 340, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <Btn onClick={onLogin} icon="👤">Sign in / Create Account</Btn>
+        <Btn onClick={onGuest} variant="secondary" icon="🎭">Continue as Guest</Btn>
+      </div>
+      <p style={{ marginTop: 24, fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>Scan the QR code to start ordering</p>
+    </div>
+  );
+}
+
+// ── Auth Screen ────────────────────────────────────────────────────────────────
+function AuthScreen({ onBack, onSuccess }) {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit() {
+    setError(''); setLoading(true);
+    try {
+      const fm = getFirebase();
+      if (fm && window.__firebaseApp) {
+        const auth = fm.getAuth(window.__firebaseApp);
+        if (mode === 'login') {
+          const cred = await fm.signInWithEmailAndPassword(auth, email, password);
+          onSuccess({ uid: cred.user.uid, email, name: cred.user.displayName || email.split('@')[0], isGuest: false });
+        } else {
+          const cred = await fm.createUserWithEmailAndPassword(auth, email, password);
+          const db = fm.getFirestore(window.__firebaseApp);
+          await fm.setDoc(fm.doc(db, 'users', cred.user.uid), { name, email, createdAt: new Date().toISOString() });
+          onSuccess({ uid: cred.user.uid, email, name, isGuest: false });
+        }
+      } else {
+        const users = LocalDB.get('users', {});
+        if (mode === 'login') {
+          const u = Object.values(users).find(u => u.email === email && u.password === password);
+          if (!u) throw new Error('Invalid email or password');
+          onSuccess({ uid: u.uid, email, name: u.name, isGuest: false });
+        } else {
+          if (Object.values(users).find(u => u.email === email)) throw new Error('Email already registered');
+          const uid = LocalDB.genId();
+          users[uid] = { uid, email, password, name };
+          LocalDB.set('users', users);
+          onSuccess({ uid, email, name, isGuest: false });
+        }
+      }
+    } catch (e) { setError(e.message || 'Something went wrong'); }
+    setLoading(false);
+  }
+
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', padding: 24 }}>
+      <BackBtn onClick={onBack} label="Welcome" />
+      <div style={{ height: 24 }} />
+      <h2 style={{ fontFamily: 'Playfair Display', fontSize: 28, marginBottom: 8 }}>{mode === 'login' ? 'Welcome back' : 'Create account'}</h2>
+      <p style={{ color: 'var(--text2)', marginBottom: 32, fontSize: 14 }}>{mode === 'login' ? 'Sign in to your account' : 'Join to save your orders & preferences'}</p>
+      {mode === 'register' && <Input label="Your name" value={name} onChange={setName} placeholder="John Doe" />}
+      <Input label="Email" value={email} onChange={setEmail} type="email" placeholder="you@example.com" />
+      <Input label="Password" value={password} onChange={setPassword} type="password" placeholder="..." error={error} />
+      <Btn onClick={handleSubmit} disabled={loading || !email || !password}>
+        {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+      </Btn>
+      <button onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}
+        style={{ background: 'none', border: 'none', color: 'var(--brand)', fontSize: 14, marginTop: 16, cursor: 'pointer', fontFamily: 'DM Sans' }}>
+        {mode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+      </button>
+    </div>
+  );
+}
+
+// ── Home Screen ────────────────────────────────────────────────────────────────
+function HomeScreen({ user, restaurant, table, onNavigate, onLogout, orders }) {
+  const theme = useTheme();
+  const myOrders = orders.filter(o => o.userId === user.uid);
+  const activeOrders = myOrders.filter(o => !['paid'].includes(o.status));
+
+  const menuItems = [
+    { id: 'menu', icon: '🍽️', title: 'Order Food', subtitle: 'Browse the menu & place an order', color: theme.brand || 'var(--brand)', colorLight: theme.brandLight || 'var(--brand-light)' },
+    { id: 'orders', icon: '📋', title: 'My Orders', subtitle: activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length !== 1 ? 's' : ''}` : 'View your order history', color: '#2D6A8F', colorLight: '#E0F0FA', badge: activeOrders.length > 0 ? activeOrders.length : null },
+    ...(!user.isGuest ? [{ id: 'profile', icon: '👤', title: 'My Profile', subtitle: user.email || '', color: '#5B4E9E', colorLight: '#EDE9FA' }] : []),
+  ];
+
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', background: 'var(--surface)' }}>
+      <div style={{ background: '#fff', padding: '28px 20px 24px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 36 }}>{restaurant.logo}</span>
+            <div>
+              <h1 style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700 }}>{restaurant.restaurantName}</h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                <span style={{ fontSize: 13 }}>🪑</span>
+                <span style={{ fontSize: 13, color: 'var(--text2)', fontWeight: 500 }}>Table {table}</span>
+              </div>
+            </div>
+          </div>
+          <button onClick={onLogout} style={{ background: 'var(--surface2)', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 13, color: 'var(--text2)', cursor: 'pointer', fontWeight: 500 }}>
+            {user.isGuest ? 'Exit' : 'Sign out'}
+          </button>
+        </div>
+        <div style={{ marginTop: 20, padding: '14px 16px', background: `linear-gradient(135deg, ${theme.brand || 'var(--brand)'}, ${theme.brandDark || 'var(--brand-dark)'})`, borderRadius: 14, color: '#fff' }}>
+          <div style={{ fontSize: 13, opacity: 0.85 }}>Welcome{user.isGuest ? '' : ','}</div>
+          <div style={{ fontFamily: 'Playfair Display', fontSize: 22, fontWeight: 700 }}>{user.isGuest ? 'Enjoy your meal! 🍴' : `${user.name} 👋`}</div>
+        </div>
+      </div>
+      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>What would you like to do?</p>
+        {menuItems.map(item => (
+          <button key={item.id} onClick={() => onNavigate(item.id)}
+            style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', width: '100%', textAlign: 'left', position: 'relative', boxShadow: 'var(--shadow)' }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, flexShrink: 0, background: item.colorLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26 }}>{item.icon}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)', marginBottom: 3 }}>{item.title}</div>
+              <div style={{ fontSize: 13, color: 'var(--text2)' }}>{item.subtitle}</div>
+            </div>
+            {item.badge > 0 && (
+              <div style={{ background: item.color, color: '#fff', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{item.badge}</div>
+            )}
+            <span style={{ color: 'var(--text2)', fontSize: 20, flexShrink: 0 }}>›</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Orders Sub-menu Screen ─────────────────────────────────────────────────────
+function OrdersScreen({ orders, user, onBack, onViewOrder }) {
+  const theme = useTheme();
+  const myOrders = orders.filter(o => o.userId === user.uid);
+  const active = myOrders.filter(o => !['paid'].includes(o.status));
+  const past = myOrders.filter(o => o.status === 'paid');
+  return (
+    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
+      <ScreenHeader title="My Orders" onBack={onBack} backLabel="Home" />
+      <div style={{ padding: 16 }}>
+        {active.length > 0 && <>
+          <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Active</p>
+          {active.map(order => (
+            <Card key={order.id} style={{ padding: 16, marginBottom: 10 }} onClick={() => onViewOrder(order)}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontWeight: 700 }}>Order #{order.orderNumber}</span>
+                <Badge color={statusColor[order.status] || 'gray'}>{statusLabel[order.status]}</Badge>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Table {order.table} · {new Date(order.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 13, color: 'var(--text2)' }}>{order.items.length} item{order.items.length !== 1 ? 's' : ''}</span>
+                <span style={{ fontWeight: 700, color: theme.brand || 'var(--brand)' }}>{fmt(order.items.reduce((s, i) => s + i.price * i.qty, 0))}</span>
+              </div>
+            </Card>
+          ))}
+        </>}
+        {past.length > 0 && <>
+          <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '16px 0 10px' }}>Past Orders</p>
+          {past.map(order => (
+            <Card key={order.id} style={{ padding: 16, marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontWeight: 700 }}>Order #{order.orderNumber}</span>
+                <Badge color="success">Paid</Badge>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>{new Date(order.createdAt).toLocaleDateString()} · Table {order.table}</div>
+              {order.items.slice(0, 2).map(item => (
+                <div key={item.id} style={{ fontSize: 13, color: 'var(--text2)' }}>{item.emoji} {item.name} x{item.qty}</div>
+              ))}
+              {order.items.length > 2 && <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>+{order.items.length - 2} more</div>}
+              <div style={{ marginTop: 8, fontWeight: 700, color: theme.brand || 'var(--brand)' }}>{fmt(order.items.reduce((s, i) => s + i.price * i.qty, 0))}</div>
+            </Card>
+          ))}
+        </>}
+        {myOrders.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text2)' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
+            <p style={{ fontWeight: 600, marginBottom: 6 }}>No orders yet</p>
+            <p style={{ fontSize: 13 }}>Go to Order Food to place your first order</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Profile Screen ─────────────────────────────────────────────────────────────
+function ProfileScreen({ user, onBack, onSave, onLogout }) {
+  const theme = useTheme();
+  const [name, setName] = useState(user.name || '');
+  const [phone, setPhone] = useState(() => { const u = LocalDB.get('users', {})[user.uid]; return u?.phone || ''; });
+  const [billing, setBilling] = useState(() => { const u = LocalDB.get('users', {})[user.uid]; return u?.billing || ''; });
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    const users = LocalDB.get('users', {});
+    users[user.uid] = { ...users[user.uid], name, phone, billing };
+    LocalDB.set('users', users);
+    onSave({ ...user, name });
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 40 }}>
+      <ScreenHeader title="My Profile" onBack={onBack} backLabel="Home" />
+      <div style={{ padding: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 28 }}>
+          <div style={{ width: 80, height: 80, borderRadius: '50%', background: `linear-gradient(135deg, ${theme.brand || 'var(--brand)'}, ${theme.brandDark || 'var(--brand-dark)'})`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 10, color: '#fff', fontFamily: 'Playfair Display', fontSize: 32, fontWeight: 700 }}>
+            {(name || 'G')[0].toUpperCase()}
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>{name || 'Guest'}</div>
+          <div style={{ color: 'var(--text2)', fontSize: 13 }}>{user.email}</div>
+        </div>
+        <Card style={{ padding: 20, marginBottom: 16 }}>
+          <h4 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>Personal Details</h4>
+          <Input label="Full Name" value={name} onChange={setName} placeholder="Your name" />
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)', marginBottom: 6 }}>Email</div>
+            <div style={{ padding: '14px 16px', borderRadius: 12, border: '2px solid var(--border)', background: 'var(--surface2)', fontSize: 15, color: 'var(--text2)' }}>{user.email || '—'}</div>
+          </div>
+          <Input label="Phone Number" value={phone} onChange={setPhone} placeholder="+36 20 000 0000" type="tel" />
+        </Card>
+        <Card style={{ padding: 20, marginBottom: 24 }}>
+          <h4 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>Billing Address</h4>
+          <textarea value={billing} onChange={e => setBilling(e.target.value)} placeholder="Street, city, postal code..." rows={3}
+            style={{ width: '100%', padding: 14, borderRadius: 12, border: '2px solid var(--border)', fontSize: 14, fontFamily: 'DM Sans', resize: 'none', outline: 'none' }} />
+        </Card>
+        {saved && <div style={{ background: 'var(--success)', color: '#fff', padding: '12px 16px', borderRadius: 12, textAlign: 'center', marginBottom: 12, fontSize: 14 }}>Profile saved!</div>}
+        <Btn onClick={handleSave} style={{ marginBottom: 12 }}>Save Changes</Btn>
+        <Btn onClick={onLogout} variant="ghost" icon="🚪">Sign Out</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Menu Screen ────────────────────────────────────────────────────────────────
+function MenuScreen({ menu, basket, onAdd, onRemove, onOpenBasket, onBack }) {
+  const theme = useTheme();
+  const { restaurant } = useApp();
+  const [activeCategory, setActiveCategory] = useState(null);
+  const categories = [...new Set(menu.filter(i => i.available).map(i => i.category))];
+  const basketCount = basket.reduce((s, i) => s + i.qty, 0);
+  const basketTotal = basket.reduce((s, i) => s + i.price * i.qty, 0);
+
+  useEffect(() => { if (categories.length && !activeCategory) setActiveCategory(categories[0]); }, [menu]);
+
+  return (
+    <div style={{ minHeight: '100vh', paddingBottom: 100, background: 'var(--surface)' }}>
+      <div style={{ background: '#fff', padding: '16px 20px 0', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <BackBtn onClick={onBack} label="Home" />
+          <h2 style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700, flex: 1 }}>Menu</h2>
+        </div>
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 16, scrollbarWidth: 'none' }}>
+          {categories.map(cat => (
+            <button key={cat} onClick={() => setActiveCategory(cat)} style={{
+              whiteSpace: 'nowrap', padding: '8px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
+              background: activeCategory === cat ? (theme.brand || 'var(--brand)') : 'var(--surface2)',
+              color: activeCategory === cat ? '#fff' : 'var(--text2)', transition: 'all .2s'
+            }}>{cat}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ padding: '16px 16px 0' }}>
+        <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, marginBottom: 16 }}>{activeCategory}</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {menu.filter(i => i.category === activeCategory && i.available).map(item => {
+            const inBasket = basket.find(b => b.id === item.id);
+            return (
+              <Card key={item.id} style={{ padding: 16 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <div style={{ fontSize: 44, lineHeight: 1 }}>{item.emoji}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <h4 style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{item.name}</h4>
+                    <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.4 }}>{item.description}</p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontFamily: 'Playfair Display', fontSize: 18, fontWeight: 700, color: theme.brand || 'var(--brand)' }}>{fmt(item.price)}</span>
+                      {inBasket ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <button onClick={() => onRemove(item.id)} style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--surface2)', border: 'none', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                          <span style={{ fontWeight: 700, fontSize: 16, minWidth: 20, textAlign: 'center' }}>{inBasket.qty}</span>
+                          <button onClick={() => onAdd(item)} style={{ width: 32, height: 32, borderRadius: 10, background: theme.brand || 'var(--brand)', border: 'none', fontSize: 18, cursor: 'pointer', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => onAdd(item)} style={{ background: theme.brand || 'var(--brand)', color: '#fff', border: 'none', borderRadius: 12, padding: '8px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Add</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+      {basketCount > 0 && (
+        <div className="fade-up" style={{ position: 'fixed', bottom: 24, left: 20, right: 20, zIndex: 100 }}>
+          <button onClick={onOpenBasket} style={{ width: '100%', padding: '16px 24px', background: theme.brand || 'var(--brand)', color: '#fff', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', cursor: 'pointer', fontFamily: 'DM Sans' }}>
+            <span style={{ background: 'rgba(255,255,255,0.25)', borderRadius: 8, padding: '2px 10px', fontSize: 14 }}>{basketCount}</span>
+            <span>View Basket</span>
+            <span>{fmt(basketTotal)}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Basket Screen ──────────────────────────────────────────────────────────────
+function BasketScreen({ basket, onAdd, onRemove, onBack, onPlaceOrder }) {
+  const theme = useTheme();
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(false);
+  const total = basket.reduce((s, i) => s + i.price * i.qty, 0);
+
+  async function handleOrder() { setLoading(true); await onPlaceOrder(notes); setLoading(false); }
+
+  return (
+    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 120 }}>
+      <ScreenHeader title="Your Basket" onBack={onBack} backLabel="Menu" />
+      <div style={{ padding: 16 }}>
+        {basket.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text2)' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🛒</div>
+            <p>Your basket is empty</p>
+          </div>
+        ) : (
+          <>
+            <Card style={{ marginBottom: 16 }}>
+              {basket.map((item, i) => (
+                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, borderBottom: i < basket.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <span style={{ fontSize: 32 }}>{item.emoji}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</div>
+                    <div style={{ color: theme.brand || 'var(--brand)', fontWeight: 700, fontSize: 15 }}>{fmt(item.price * item.qty)}</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <button onClick={() => onRemove(item.id)} style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--surface2)', border: 'none', fontSize: 16, cursor: 'pointer' }}>−</button>
+                    <span style={{ fontWeight: 700, minWidth: 16, textAlign: 'center' }}>{item.qty}</span>
+                    <button onClick={() => onAdd(item)} style={{ width: 30, height: 30, borderRadius: 8, background: theme.brand || 'var(--brand)', border: 'none', fontSize: 16, cursor: 'pointer', color: '#fff' }}>+</button>
+                  </div>
+                </div>
+              ))}
+            </Card>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)', display: 'block', marginBottom: 8 }}>Special requests / Allergies</label>
+              <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. no onions, extra spicy..." rows={3}
+                style={{ width: '100%', padding: 14, borderRadius: 12, border: '2px solid var(--border)', fontSize: 14, fontFamily: 'DM Sans', resize: 'none', outline: 'none' }} />
+            </div>
+            <Card style={{ padding: 16, marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 14, color: 'var(--text2)' }}><span>Subtotal</span><span>{fmt(total)}</span></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 14, color: 'var(--text2)' }}><span>Service</span><span>Included</span></div>
+              <div style={{ height: 1, background: 'var(--border)', margin: '12px 0' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 18 }}>
+                <span>Total</span><span style={{ color: theme.brand || 'var(--brand)' }}>{fmt(total)}</span>
+              </div>
+            </Card>
+          </>
+        )}
+      </div>
+      {basket.length > 0 && (
+        <div style={{ position: 'fixed', bottom: 24, left: 20, right: 20 }}>
+          <Btn onClick={handleOrder} disabled={loading} size="lg" icon="🍽️">{loading ? 'Placing order...' : 'Place Order'}</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Order Status Screen ────────────────────────────────────────────────────────
+function OrderStatusScreen({ order, onPayment, onBack, onAddMore }) {
+  const theme = useTheme();
+  const steps = ['pending', 'confirmed', 'preparing', 'ready', 'served'];
+  const currentIdx = steps.indexOf(order.status);
+  const stepLabel = { pending: 'Order received', confirmed: 'Order confirmed', preparing: 'Being prepared', ready: 'Ready!', served: 'Served & enjoyed' };
+  const stepIcon = { pending: '📋', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', served: '🍽️' };
+
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
+      <ScreenHeader title={`Order #${order.orderNumber}`} onBack={onBack} backLabel="Orders" />
+      <div style={{ padding: 20 }}>
+        <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 24 }}>We'll update you as your order progresses</p>
+        <Card style={{ padding: 20, marginBottom: 16 }}>
+          {steps.map((step, i) => (
+            <div key={step} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: i < steps.length - 1 ? 16 : 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, background: i <= currentIdx ? (theme.brand || 'var(--brand)') : 'var(--surface2)', color: i <= currentIdx ? '#fff' : 'var(--text2)', transition: 'all .4s' }}>
+                  {i <= currentIdx ? stepIcon[step] : '○'}
+                </div>
+                {i < steps.length - 1 && <div style={{ width: 2, height: 20, background: i < currentIdx ? (theme.brand || 'var(--brand)') : 'var(--border)', margin: '4px 0' }} />}
+              </div>
+              <div style={{ paddingTop: 6 }}>
+                <div style={{ fontWeight: i === currentIdx ? 700 : 400, fontSize: 14, color: i <= currentIdx ? 'var(--text)' : 'var(--text2)' }}>{stepLabel[step]}</div>
+                {i === currentIdx && <div style={{ fontSize: 12, color: theme.brand || 'var(--brand)', marginTop: 2, animation: 'pulse 2s infinite' }}>In progress...</div>}
+              </div>
+            </div>
+          ))}
+        </Card>
+        <Card style={{ padding: 16, marginBottom: 16 }}>
+          <h4 style={{ fontWeight: 700, marginBottom: 12 }}>Your items</h4>
+          {order.items.map(item => (
+            <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 14 }}>
+              <span>{item.emoji} {item.name} x{item.qty}</span>
+              <span style={{ fontWeight: 600 }}>{fmt(item.price * item.qty)}</span>
+            </div>
+          ))}
+          <div style={{ height: 1, background: 'var(--border)', margin: '12px 0' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+            <span>Total</span>
+            <span style={{ color: theme.brand || 'var(--brand)' }}>{fmt(order.items.reduce((s, i) => s + i.price * i.qty, 0))}</span>
+          </div>
+        </Card>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {order.status === 'served' && <Btn onClick={onPayment} icon="💳">Request Bill & Pay</Btn>}
+          <Btn onClick={onAddMore} variant="ghost" icon="➕">Add More Items</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Payment Screen ─────────────────────────────────────────────────────────────
+function PaymentScreen({ order, onBack, onSuccess }) {
+  const theme = useTheme();
+  const [method, setMethod] = useState('card');
+  const [cardNum, setCardNum] = useState('');
+  const [expiry, setExpiry] = useState('');
+  const [cvv, setCvv] = useState('');
+  const [loading, setLoading] = useState(false);
+  const total = order.items.reduce((s, i) => s + i.price * i.qty, 0);
+
+  async function handlePay() { setLoading(true); await new Promise(r => setTimeout(r, 2200)); onSuccess(); setLoading(false); }
+
+  return (
+    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 120 }}>
+      <ScreenHeader title="Payment" onBack={onBack} backLabel="Order" />
+      <div style={{ padding: 20 }}>
+        <Card style={{ padding: 16, marginBottom: 20, background: theme.brandLight || 'var(--brand-light)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 14, color: 'var(--text2)' }}>Total due</span>
+            <span style={{ fontFamily: 'Playfair Display', fontSize: 28, fontWeight: 700, color: theme.brand || 'var(--brand)' }}>{fmt(total)}</span>
+          </div>
+        </Card>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          {[['card','💳','Card'],['cash','💵','Cash'],['apple','🍎','Apple Pay']].map(([val, icon, label]) => (
+            <button key={val} onClick={() => setMethod(val)} style={{ flex: 1, padding: '12px 8px', borderRadius: 12, border: `2px solid ${method === val ? (theme.brand || 'var(--brand)') : 'var(--border)'}`, background: method === val ? (theme.brandLight || 'var(--brand-light)') : '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600, fontFamily: 'DM Sans', color: method === val ? (theme.brand || 'var(--brand)') : 'var(--text2)' }}>{icon}<br />{label}</button>
+          ))}
+        </div>
+        {method === 'card' && (
+          <Card style={{ padding: 16, marginBottom: 20 }}>
+            <Input label="Card Number" value={cardNum} onChange={v => setCardNum(v.replace(/\D/g,'').slice(0,16).replace(/(.{4})/g,'$1 ').trim())} placeholder="1234 5678 9012 3456" />
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1 }}><Input label="Expiry" value={expiry} onChange={v => setExpiry(v.replace(/\D/g,'').slice(0,4).replace(/(.{2})/,'$1/').slice(0,5))} placeholder="MM/YY" /></div>
+              <div style={{ flex: 1 }}><Input label="CVV" value={cvv} onChange={v => setCvv(v.replace(/\D/g,'').slice(0,3))} placeholder="..." /></div>
+            </div>
+          </Card>
+        )}
+        {method === 'cash' && <Card style={{ padding: 16, marginBottom: 20, textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>💵</div><p style={{ color: 'var(--text2)', fontSize: 14 }}>Please pay at the counter or ask your waiter.</p></Card>}
+        {method === 'apple' && <Card style={{ padding: 16, marginBottom: 20, textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>🍎</div><p style={{ color: 'var(--text2)', fontSize: 14 }}>Use Apple Pay on your device to confirm.</p></Card>}
+      </div>
+      <div style={{ position: 'fixed', bottom: 24, left: 20, right: 20 }}>
+        <Btn onClick={handlePay} disabled={loading} size="lg" icon={loading ? null : '🔒'}>{loading ? <Spinner /> : `Pay ${fmt(total)}`}</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Payment Success ────────────────────────────────────────────────────────────
+function PaymentSuccessScreen({ order, onDone }) {
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center' }}>
+      <div style={{ fontSize: 80, marginBottom: 16 }}>🎉</div>
+      <h2 style={{ fontFamily: 'Playfair Display', fontSize: 28, marginBottom: 8 }}>Payment Successful!</h2>
+      <p style={{ color: 'var(--text2)', fontSize: 15, marginBottom: 8 }}>Thank you for dining with us.</p>
+      <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 32 }}>Order #{order.orderNumber} has been closed.</p>
+      <Btn onClick={onDone} size="lg">Back to Home</Btn>
+    </div>
+  );
+}
+
+// ── Waiter Dashboard ───────────────────────────────────────────────────────────
+function WaiterDashboard({ onExit, restaurantId }) {
+  const theme = useTheme();
+  const [orders, setOrders] = useState([]);
+  const [filter, setFilter] = useState('active');
+
+  useEffect(() => {
+    setOrders(LocalDB.get(`orders_${restaurantId}`, []));
+    const interval = setInterval(() => setOrders(LocalDB.get(`orders_${restaurantId}`, [])), 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  function updateStatus(orderId, newStatus) {
+    const updated = LocalDB.get(`orders_${restaurantId}`, []).map(o => o.id === orderId ? { ...o, status: newStatus } : o);
+    LocalDB.set(`orders_${restaurantId}`, updated);
+    setOrders(updated);
+  }
+
+  const nextStatus = { pending: 'confirmed', confirmed: 'preparing', preparing: 'ready', ready: 'served', served: 'paid' };
+  const nextLabel = { pending: 'Confirm', confirmed: 'Start Preparing', preparing: 'Mark Ready', ready: 'Mark Served', served: 'Mark Paid' };
+  const [waiterCalls, setWaiterCalls] = React.useState(() => LocalDB.get('waiter_calls_' + restaurantId, []));
+
+  React.useEffect(() => {
+    const interval2 = setInterval(() => setWaiterCalls(LocalDB.get('waiter_calls_' + restaurantId, [])), 2000);
+    return () => clearInterval(interval2);
+  }, []);
+
+  function dismissCall(id) {
+    const updated = LocalDB.get('waiter_calls_' + restaurantId, []).map(c => c.id === id ? { ...c, status: 'dismissed' } : c);
+    LocalDB.set('waiter_calls_' + restaurantId, updated);
+    setWaiterCalls(updated);
+  }
+
+  const pendingCalls = waiterCalls.filter(c => c.status === 'pending');
+  const displayed = filter === 'active' ? orders.filter(o => o.status !== 'paid') : orders.filter(o => o.status === 'paid');
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--surface)' }}>
+      <div style={{ background: '#1A1714', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 style={{ color: '#fff', fontFamily: 'Playfair Display', fontSize: 20 }}>🍽️ Staff Dashboard</h2>
+          <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>{orders.filter(o => o.status !== 'paid').length} active orders</p>
+        </div>
+        <button onClick={onExit} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: 10, padding: '8px 14px', cursor: 'pointer', fontSize: 13 }}>← Exit</button>
+      </div>
+      <div style={{ display: 'flex', background: '#fff', borderBottom: '1px solid var(--border)' }}>
+        {[['active','Active Orders'],['history','History'],['calls','🛎️ Waiter Needed']].map(([val, label]) => (
+          <button key={val} onClick={() => setFilter(val)} style={{ flex: 1, padding: '14px 6px', border: 'none', background: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans', borderBottom: filter === val ? `3px solid ${theme.brand || 'var(--brand)'}` : '3px solid transparent', color: filter === val ? (theme.brand || 'var(--brand)') : 'var(--text2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+              {label}
+              {val === 'calls' && pendingCalls.length > 0 && (
+                <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{pendingCalls.length}</span>
+              )}
+            </button>
+        ))}
+      </div>
+      {filter === 'calls' && (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {pendingCalls.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text2)' }}>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+              <p>No waiter calls right now</p>
+            </div>
+          )}
+          {pendingCalls.map(call => (
+            <div key={call.id} style={{ background: '#fff', border: '2px solid var(--warning)', borderRadius: 16, padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: '#FEF3D0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>🛎️</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>Table {call.table} needs help</div>
+                <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>{new Date(call.calledAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+              </div>
+              <button onClick={() => dismissCall(call.id)} style={{ background: 'var(--success)', color: '#fff', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}>Dismiss ✓</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {filter !== 'calls' && (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {displayed.length === 0 && <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text2)' }}><div style={{ fontSize: 48, marginBottom: 12 }}>✅</div><p>{filter === 'active' ? 'No active orders' : 'No paid orders yet'}</p></div>}
+          {displayed.map(order => (
+            <Card key={order.id} style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <div><span style={{ fontWeight: 700, fontSize: 16 }}>Table {order.table}</span><span style={{ color: 'var(--text2)', fontSize: 13, marginLeft: 8 }}>#{order.orderNumber}</span></div>
+                <Badge color={statusColor[order.status] || 'gray'}>{statusLabel[order.status]}</Badge>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>
+                {new Date(order.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}
+                {order.notes && <span style={{ marginLeft: 8 }}>📝 {order.notes}</span>}
+              </div>
+              {order.items.map(item => (
+                <div key={item.id} style={{ fontSize: 14, marginBottom: 4, display: 'flex', gap: 8 }}>
+                  <span>{item.emoji}</span><span>{item.qty}x {item.name}</span>
+                  <span style={{ color: 'var(--text2)', marginLeft: 'auto' }}>{fmt(item.price * item.qty)}</span>
+                </div>
+              ))}
+              <div style={{ height: 1, background: 'var(--border)', margin: '12px 0' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 700, color: theme.brand || 'var(--brand)' }}>{fmt(order.items.reduce((s,i) => s + i.price * i.qty, 0))}</span>
+                {nextStatus[order.status] && (
+                  <button onClick={() => updateStatus(order.id, nextStatus[order.status])} style={{ background: theme.brand || 'var(--brand)', color: '#fff', border: 'none', borderRadius: 10, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{nextLabel[order.status]} →</button>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Admin Panel ────────────────────────────────────────────────────────────────
+function AdminPanel({ onExit, restaurantId }) {
+  const [tab, setTab] = useState('appearance');
+  const [config, setConfigState] = useState(() => LocalDB.get(`config_${restaurantId}`, DEFAULT_CONFIG));
+  const [menu, setMenuState] = useState(() => LocalDB.get(`menu_${restaurantId}`, DEFAULT_MENU));
+  const [editItem, setEditItem] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const theme = useTheme();
+
+  function saveConfig(updates) { const newCfg = { ...config, ...updates }; setConfigState(newCfg); LocalDB.set(`config_${restaurantId}`, newCfg); setSaved(true); setTimeout(() => setSaved(false), 2000); }
+  function saveMenuItem(item) {
+    const newMenu = item.id && menu.find(m => m.id === item.id) ? menu.map(m => m.id === item.id ? item : m) : [...menu, { ...item, id: LocalDB.genId() }];
+    setMenuState(newMenu); LocalDB.set(`menu_${restaurantId}`, newMenu); setEditItem(null);
+  }
+  function deleteItem(id) { const newMenu = menu.filter(m => m.id !== id); setMenuState(newMenu); LocalDB.set(`menu_${restaurantId}`, newMenu); }
+  const categories = [...new Set(menu.map(i => i.category))];
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--surface)' }}>
+      <div style={{ background: '#1A1714', padding: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ color: '#fff', fontFamily: 'Playfair Display', fontSize: 20 }}>⚙️ Admin Panel</h2>
+        <button onClick={onExit} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: 10, padding: '8px 14px', cursor: 'pointer', fontSize: 13 }}>← Exit</button>
+      </div>
+      {saved && <div style={{ background: 'var(--success)', color: '#fff', padding: '10px 20px', fontSize: 14, textAlign: 'center' }}>✅ Saved!</div>}
+      <div style={{ display: 'flex', background: '#fff', borderBottom: '1px solid var(--border)' }}>
+        {[['appearance','🎨 Style'],['menu','🍽️ Menu'],['qr','📱 QR Codes']].map(([val, label]) => (
+          <button key={val} onClick={() => setTab(val)} style={{ flex: 1, padding: '14px 8px', border: 'none', background: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans', borderBottom: tab === val ? `3px solid ${theme.brand}` : '3px solid transparent', color: tab === val ? theme.brand : 'var(--text2)' }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ padding: 16 }}>
+        {tab === 'appearance' && <>
+          <Input label="Restaurant Name" value={config.restaurantName} onChange={v => saveConfig({ restaurantName: v })} />
+          <Input label="Tagline" value={config.tagline} onChange={v => saveConfig({ tagline: v })} />
+          <Input label="Logo Emoji" value={config.logo} onChange={v => saveConfig({ logo: v })} />
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)', marginBottom: 8 }}>Brand Color</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {['#C8873A','#2D6A8F','#5B4E9E','#3D8C5F','#C04040','#D4956A','#1A1714'].map(color => (
+                <div key={color} onClick={() => saveConfig({ brand: color, brandDark: color, brandLight: color+'22' })}
+                  style={{ width: 36, height: 36, borderRadius: '50%', background: color, cursor: 'pointer', border: config.brand === color ? '3px solid #333' : '3px solid transparent' }} />
+              ))}
+              <input type="color" value={config.brand} onChange={e => saveConfig({ brand: e.target.value })} style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', cursor: 'pointer', padding: 0 }} />
+            </div>
+          </div>
+        </>}
+        {tab === 'menu' && <>
+          <Btn onClick={() => setEditItem({ name: '', category: categories[0] || 'Starters', price: '', emoji: '🍽️', description: '', available: true })} style={{ marginBottom: 16 }} icon="➕">Add Item</Btn>
+          {categories.map(cat => (
+            <div key={cat} style={{ marginBottom: 20 }}>
+              <h4 style={{ fontFamily: 'Playfair Display', fontSize: 16, marginBottom: 8, color: 'var(--text2)' }}>{cat}</h4>
+              {menu.filter(i => i.category === cat).map(item => (
+                <Card key={item.id} style={{ padding: 12, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 28 }}>{item.emoji}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</div>
+                      <div style={{ color: 'var(--text2)', fontSize: 13 }}>{fmt(item.price)} · {item.available ? '✅ Available' : '❌ Hidden'}</div>
+                    </div>
+                    <button onClick={() => setEditItem(item)} style={{ background: 'var(--surface2)', border: 'none', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 13 }}>Edit</button>
+                    <button onClick={() => deleteItem(item.id)} style={{ background: '#FDEAE8', border: 'none', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 13, color: 'var(--danger)' }}>✕</button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ))}
+        </>}
+        {tab === 'qr' && <>
+          <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 16, lineHeight: 1.6 }}>Each table gets a unique QR code URL. Share these with your customers.</p>
+          {[1,2,3,4,5,6].map(t => {
+            const url = `${window.location.href.split('?')[0]}?restaurant=${restaurantId}&table=${t}`;
+            return (
+              <Card key={t} style={{ padding: 14, marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div><div style={{ fontWeight: 600 }}>Table {t}</div><div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>...?restaurant={restaurantId}&table={t}</div></div>
+                  <button onClick={() => navigator.clipboard?.writeText(url)} style={{ background: theme.brand, color: '#fff', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Copy</button>
+                </div>
+              </Card>
+            );
+          })}
+        </>}
+      </div>
+      <BottomSheet open={!!editItem} onClose={() => setEditItem(null)} title={editItem?.id ? 'Edit Item' : 'New Item'}>
+        {editItem && <>
+          <Input label="Name" value={editItem.name} onChange={v => setEditItem({...editItem, name: v})} placeholder="Dish name" />
+          <Input label="Description" value={editItem.description} onChange={v => setEditItem({...editItem, description: v})} placeholder="Short description" />
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}><Input label="Price (€)" value={editItem.price} onChange={v => setEditItem({...editItem, price: v})} type="number" placeholder="0.00" /></div>
+            <div style={{ flex: 1 }}><Input label="Emoji" value={editItem.emoji} onChange={v => setEditItem({...editItem, emoji: v})} placeholder="🍽️" /></div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)', marginBottom: 8 }}>Category</div>
+            <select value={editItem.category} onChange={e => setEditItem({...editItem, category: e.target.value})}
+              style={{ width: '100%', padding: 14, borderRadius: 12, border: '2px solid var(--border)', fontSize: 15, fontFamily: 'DM Sans', background: '#fff' }}>
+              {[...categories, 'New Category'].map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+            <input type="checkbox" checked={editItem.available} onChange={e => setEditItem({...editItem, available: e.target.checked})} id="avail" style={{ width: 20, height: 20 }} />
+            <label htmlFor="avail" style={{ fontSize: 14, fontWeight: 500 }}>Available on menu</label>
+          </div>
+          <Btn onClick={() => saveMenuItem(editItem)}>Save Item</Btn>
+        </>}
+      </BottomSheet>
+    </div>
+  );
+}
+
+function AdminLogin({ onSuccess, onBack, config }) {
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  return (
+    <div className="fade-up" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', padding: 24 }}>
+      <BackBtn onClick={onBack} label="Welcome" />
+      <div style={{ height: 24 }} />
+      <h2 style={{ fontFamily: 'Playfair Display', fontSize: 28, marginBottom: 8 }}>Admin Access</h2>
+      <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 32 }}>Enter your admin password to continue</p>
+      <Input label="Admin Password" value={pw} onChange={setPw} type="password" placeholder="..." error={err} />
+      <Btn onClick={() => { if (pw === (config.adminPassword || 'admin123')) onSuccess(); else setErr('Incorrect password'); }}>Enter Admin Panel</Btn>
+      <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>Default password: admin123</p>
+    </div>
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────────
+function App() {
+  const params = new URLSearchParams(window.location.search);
+  const restaurantId = params.get('restaurant') || 'demo';
+  const tableParam = params.get('table') || '1';
+
+  const [config, setConfig] = useState(() => LocalDB.get(`config_${restaurantId}`, DEFAULT_CONFIG));
+  const [menu, setMenu] = useState(() => LocalDB.get(`menu_${restaurantId}`, DEFAULT_MENU));
+  // screens: welcome | auth | home | menu | basket | orders | orderStatus | profile | payment | paySuccess | waiter | adminLogin | admin
+  const [screen, setScreen] = useState('welcome');
+  const [user, setUser] = useState(null);
+  const [basket, setBasket] = useState([]);
+  const [currentOrder, setCurrentOrder] = useState(null);
+  const [orders, setOrders] = useState(() => LocalDB.get(`orders_${restaurantId}`, []));
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    setConfig(LocalDB.get(`config_${restaurantId}`, DEFAULT_CONFIG));
+    setMenu(LocalDB.get(`menu_${restaurantId}`, DEFAULT_MENU));
+    setOrders(LocalDB.get(`orders_${restaurantId}`, []));
+  }, [screen]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--brand', config.brand || '#C8873A');
+    document.documentElement.style.setProperty('--brand-dark', config.brandDark || '#9E621E');
+    document.documentElement.style.setProperty('--brand-light', config.brandLight || '#F5E6D3');
+  }, [config]);
+
+  const showToast = (message, type = 'info') => setToast({ message, type });
+
+  function addToBasket(item) {
+    setBasket(prev => { const ex = prev.find(b => b.id === item.id); if (ex) return prev.map(b => b.id === item.id ? { ...b, qty: b.qty + 1 } : b); return [...prev, { ...item, qty: 1 }]; });
+  }
+  function removeFromBasket(id) {
+    setBasket(prev => { const ex = prev.find(b => b.id === id); if (ex?.qty === 1) return prev.filter(b => b.id !== id); return prev.map(b => b.id === id ? { ...b, qty: b.qty - 1 } : b); });
+  }
+
+  async function placeOrder(notes) {
+    const orderNum = Math.floor(1000 + Math.random() * 9000);
+    const order = { id: LocalDB.genId(), orderNumber: orderNum, restaurantId, table: tableParam, userId: user?.uid || 'guest', items: basket, notes, status: 'pending', createdAt: new Date().toISOString() };
+    const allOrders = LocalDB.get(`orders_${restaurantId}`, []);
+    allOrders.push(order);
+    LocalDB.set(`orders_${restaurantId}`, allOrders);
+    setOrders([...allOrders]);
+    setCurrentOrder(order);
+    setBasket([]);
+    setScreen('orderStatus');
+    showToast('Order placed! 🎉', 'success');
+    const statusFlow = ['confirmed', 'preparing', 'ready'];
+    statusFlow.forEach((status, i) => {
+      setTimeout(() => {
+        const updated = LocalDB.get(`orders_${restaurantId}`, []).map(o => o.id === order.id ? { ...o, status } : o);
+        LocalDB.set(`orders_${restaurantId}`, updated);
+        setOrders([...updated]);
+        setCurrentOrder(prev => prev?.id === order.id ? { ...prev, status } : prev);
+      }, 6000 + i * 8000);
+    });
+  }
+
+  function completePayment() {
+    if (!currentOrder) return;
+    const updated = LocalDB.get(`orders_${restaurantId}`, []).map(o => o.id === currentOrder.id ? { ...o, status: 'paid' } : o);
+    LocalDB.set(`orders_${restaurantId}`, updated);
+    setCurrentOrder(prev => ({ ...prev, status: 'paid' }));
+    setOrders([...updated]);
+    setScreen('paySuccess');
+  }
+
+  function handleNavigate(id) {
+    if (id === 'menu') setScreen('menu');
+    else if (id === 'orders') setScreen('orders');
+    else if (id === 'profile') setScreen('profile');
+  }
+
+  const theme = { brand: config.brand, brandDark: config.brandDark, brandLight: config.brandLight };
+  const appCtx = { restaurant: config, showToast, restaurantId };
+
+  return (
+    <ThemeContext.Provider value={theme}>
+      <AppContext.Provider value={appCtx}>
+        <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', position: 'relative', background: 'var(--surface)', boxShadow: '0 0 60px rgba(0,0,0,0.1)' }}>
+          {screen === 'welcome' && (
+            <div style={{ position: 'relative' }}>
+              <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 8, zIndex: 50 }}>
+                <button onClick={() => setScreen('adminLogin')} style={{ background: 'rgba(0,0,0,0.1)', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, cursor: 'pointer', color: 'rgba(0,0,0,0.5)' }}>Admin</button>
+                <button onClick={() => setScreen('waiter')} style={{ background: 'rgba(0,0,0,0.1)', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, cursor: 'pointer', color: 'rgba(0,0,0,0.5)' }}>Staff</button>
+              </div>
+              <WelcomeScreen restaurant={config} table={tableParam}
+                onGuest={() => { setUser({ uid: 'guest', name: 'Guest', isGuest: true }); setScreen('home'); }}
+                onLogin={() => setScreen('auth')} />
+            </div>
+          )}
+          {screen === 'auth' && <AuthScreen onBack={() => setScreen('welcome')} onSuccess={u => { setUser(u); setScreen('home'); }} />}
+          {screen === 'home' && user && (
+            <HomeScreen user={user} restaurant={config} table={tableParam}
+              onNavigate={handleNavigate}
+              onLogout={() => { setUser(null); setBasket([]); setCurrentOrder(null); setScreen('welcome'); }}
+              orders={orders} />
+          )}
+          {screen === 'orders' && user && (
+            <OrdersScreen orders={orders} user={user} onBack={() => setScreen('home')}
+              onViewOrder={order => { setCurrentOrder(order); setScreen('orderStatus'); }} />
+          )}
+          {screen === 'profile' && user && !user.isGuest && (
+            <ProfileScreen user={user} onBack={() => setScreen('home')}
+              onSave={updated => setUser(updated)}
+              onLogout={() => { setUser(null); setBasket([]); setScreen('welcome'); }} />
+          )}
+          {screen === 'menu' && user && (
+            <MenuScreen menu={menu} basket={basket} onAdd={addToBasket} onRemove={removeFromBasket}
+              onOpenBasket={() => setScreen('basket')} onBack={() => setScreen('home')} />
+          )}
+          {screen === 'basket' && user && (
+            <BasketScreen basket={basket} onAdd={addToBasket} onRemove={removeFromBasket}
+              onBack={() => setScreen('menu')} onPlaceOrder={placeOrder} />
+          )}
+          {screen === 'orderStatus' && currentOrder && (
+            <OrderStatusScreen order={currentOrder}
+              onPayment={() => setScreen('payment')}
+              onBack={() => setScreen('orders')}
+              onAddMore={() => setScreen('menu')} />
+          )}
+          {screen === 'payment' && currentOrder && (
+            <PaymentScreen order={currentOrder} onBack={() => setScreen('orderStatus')} onSuccess={completePayment} />
+          )}
+          {screen === 'paySuccess' && currentOrder && (
+            <PaymentSuccessScreen order={currentOrder} onDone={() => { setCurrentOrder(null); setScreen('home'); }} />
+          )}
+          {screen === 'waiter' && <WaiterDashboard onExit={() => setScreen('welcome')} restaurantId={restaurantId} />}
+          {screen === 'adminLogin' && <AdminLogin onSuccess={() => setScreen('admin')} onBack={() => setScreen('welcome')} config={config} />}
+          {screen === 'admin' && <AdminPanel onExit={() => { setConfig(LocalDB.get(`config_${restaurantId}`, DEFAULT_CONFIG)); setMenu(LocalDB.get(`menu_${restaurantId}`, DEFAULT_MENU)); setScreen('welcome'); }} restaurantId={restaurantId} />}
+          {user && !['welcome','auth','waiter','adminLogin','admin','paySuccess'].includes(screen) && (
+            <CallWaiterFAB table={tableParam} restaurantId={restaurantId} show={true} />
+          )}
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+        </div>
+      </AppContext.Provider>
+    </ThemeContext.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
