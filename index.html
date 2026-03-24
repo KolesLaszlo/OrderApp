@@ -207,8 +207,19 @@ function ScreenHeader({ title, onBack, backLabel, right }) {
 // ─── CALL WAITER FAB ───────────────────────────────────────────────────────────
 function CallWaiterFAB({ table, restaurantId }) {
   const theme = useTheme() || {};
+  // states: 'idle' | 'dialog' | 'called' | 'cancel_confirm'
   const [state, setState] = useState('idle');
   const [miniToast, setMiniToast] = useState(false);
+  const lastClickTime = useRef(null);
+
+  function cancelWaiter() {
+    // Remove pending call from DB so staff dashboard clears it
+    const calls = DB.get('waiter_calls_'+restaurantId, []);
+    const updated = calls.map(c => c.table === table && c.status === 'pending' ? { ...c, status: 'cancelled' } : c);
+    DB.set('waiter_calls_'+restaurantId, updated);
+    setState('idle');
+    lastClickTime.current = null;
+  }
 
   function callWaiter() {
     const calls = DB.get('waiter_calls_'+restaurantId, []);
@@ -216,16 +227,33 @@ function CallWaiterFAB({ table, restaurantId }) {
       calls.push({ id: DB.id(), table, calledAt: new Date().toISOString(), status: 'pending' });
       DB.set('waiter_calls_'+restaurantId, calls);
     }
+    lastClickTime.current = Date.now();
     setState('called');
   }
 
   function handleClick() {
-    if (state === 'called') { setMiniToast(true); setTimeout(() => setMiniToast(false), 2500); }
-    else setState('dialog');
+    if (state === 'called') {
+      const now = Date.now();
+      const diff = lastClickTime.current ? now - lastClickTime.current : Infinity;
+      if (diff <= 5000) {
+        // Second tap within 5 seconds — show cancel confirm dialog
+        setState('cancel_confirm');
+      } else {
+        // Tapped again after 5 seconds — just show "coming right away"
+        setMiniToast(true);
+        setTimeout(() => setMiniToast(false), 2500);
+        lastClickTime.current = now;
+      }
+    } else if (state === 'idle') {
+      setState('dialog');
+    }
   }
+
+  const brand = theme.brand || 'var(--brand)';
 
   return (
     <>
+      {/* Initial "Call Waiter?" dialog */}
       {state === 'dialog' && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
           <div onClick={() => setState('idle')} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
@@ -234,24 +262,47 @@ function CallWaiterFAB({ table, restaurantId }) {
             <div style={{ fontSize: 52, textAlign: 'center', marginBottom: 12 }}>🛎️</div>
             <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, fontWeight: 700, textAlign: 'center', marginBottom: 8 }}>Need assistance?</h3>
             <p style={{ color: 'var(--text2)', fontSize: 15, textAlign: 'center', lineHeight: 1.5, marginBottom: 28 }}>Have any question? We're here for you!</p>
-            <button onClick={callWaiter} style={{ width: '100%', padding: 16, background: theme.brand || 'var(--brand)', color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>🛎️ Call Waiter</button>
+            <button onClick={callWaiter} style={{ width: '100%', padding: 16, background: brand, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>🛎️ Call Waiter</button>
             <button onClick={() => setState('idle')} style={{ width: '100%', padding: 14, background: 'var(--surface2)', color: 'var(--text)', border: 'none', borderRadius: 14, fontSize: 15, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans' }}>Cancel</button>
           </div>
         </div>
       )}
-      {miniToast && <div className="fade-up" style={{ position: 'fixed', bottom: 96, right: 20, background: '#1A1714', color: '#fff', padding: '10px 16px', borderRadius: 12, fontSize: 13, fontWeight: 500, zIndex: 700, boxShadow: 'var(--shadow-lg)', whiteSpace: 'nowrap' }}>Noted, coming right away! 🏃</div>}
-      <button onClick={handleClick} style={{ position: 'fixed', bottom: 24, right: 20, zIndex: 500, width: 56, height: 56, borderRadius: '50%', background: state === 'called' ? 'var(--success)' : (theme.brand || 'var(--brand)'), color: '#fff', border: 'none', fontSize: 22, cursor: 'pointer', boxShadow: '0 4px 20px rgba(0,0,0,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .3s' }}>
-        {state === 'called' ? '🏃' : '🛎️'}
+
+      {/* "Changed your mind?" cancel confirm dialog */}
+      {state === 'cancel_confirm' && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+          <div className="fade-up" style={{ position: 'relative', width: '100%', maxWidth: 480, background: '#fff', borderRadius: '24px 24px 0 0', padding: '32px 24px 48px', zIndex: 601 }}>
+            <div style={{ width: 40, height: 4, background: 'var(--border)', borderRadius: 2, margin: '0 auto 24px' }} />
+            <div style={{ fontSize: 52, textAlign: 'center', marginBottom: 12 }}>🤔</div>
+            <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, fontWeight: 700, textAlign: 'center', marginBottom: 12 }}>Changed your mind?</h3>
+            <p style={{ color: 'var(--text2)', fontSize: 15, textAlign: 'center', lineHeight: 1.6, marginBottom: 28 }}>Pushed the wrong button? Got you covered!</p>
+            <button onClick={() => setState('called')} style={{ width: '100%', padding: 16, background: brand, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>🛎️ Still need the waiter</button>
+            <button onClick={cancelWaiter} style={{ width: '100%', padding: 14, background: '#FDEAE8', color: 'var(--danger)', border: '2px solid var(--danger)', borderRadius: 14, fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans' }}>No waiter needed</button>
+          </div>
+        </div>
+      )}
+
+      {/* "Coming right away" mini toast */}
+      {miniToast && (
+        <div className="fade-up" style={{ position: 'fixed', bottom: 96, right: 20, background: '#1A1714', color: '#fff', padding: '10px 16px', borderRadius: 12, fontSize: 13, fontWeight: 500, zIndex: 700, boxShadow: 'var(--shadow-lg)', whiteSpace: 'nowrap' }}>
+          Noted, coming right away! 🏃
+        </div>
+      )}
+
+      {/* FAB button */}
+      <button onClick={handleClick} style={{ position: 'fixed', bottom: 24, right: 20, zIndex: 500, width: 56, height: 56, borderRadius: '50%', background: state === 'called' || state === 'cancel_confirm' ? 'var(--success)' : brand, color: '#fff', border: 'none', fontSize: 22, cursor: 'pointer', boxShadow: '0 4px 20px rgba(0,0,0,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .3s' }}>
+        {state === 'called' || state === 'cancel_confirm' ? '🏃' : '🛎️'}
       </button>
     </>
   );
 }
 
 // ─── STATUS HELPERS ────────────────────────────────────────────────────────────
-const statusLabel = { pending: 'Pending', confirmed: 'Confirmed', preparing: 'Preparing', ready: 'Ready!', served: 'Served', paid: 'Paid' };
-const statusColor = { pending: 'warning', confirmed: 'brand', preparing: 'warning', ready: 'success', served: 'gray', paid: 'success' };
-const nextStatus = { pending: 'confirmed', confirmed: 'preparing', preparing: 'ready', ready: 'served', served: 'paid' };
-const nextLabel = { pending: 'Confirm', confirmed: 'Start Preparing', preparing: 'Mark Ready', ready: 'Mark Served', served: 'Mark Paid' };
+const statusLabel = { pending: 'Order received', confirmed: 'Order confirmed', preparing: 'Being prepared', ready_to_serve: 'Ready to serve', served: 'Served', closed: 'Closed' };
+const statusColor = { pending: 'warning', confirmed: 'brand', preparing: 'warning', ready_to_serve: 'success', served: 'success', closed: 'gray' };
+const nextStatus = { pending: 'confirmed', confirmed: 'preparing', preparing: 'ready_to_serve', ready_to_serve: 'served' };
+const nextLabel = { pending: 'Order confirmed', confirmed: 'Being prepared', preparing: 'Ready to serve', ready_to_serve: 'Served' };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ─── QR LANDING PAGE ──────────────────────────────────────────────────────────
@@ -457,7 +508,7 @@ function WelcomeScreen({ config, table, onGuest, onLogin }) {
 function HomeScreen({ user, config, table, onNavigate, onLogout, orders }) {
   const theme = useTheme() || {};
   const myOrders = orders.filter(o => o.userId === user.uid);
-  const activeOrders = myOrders.filter(o => !['paid'].includes(o.status));
+  const activeOrders = myOrders.filter(o => !['closed'].includes(o.status));
   const items = [
     { id: 'menu', icon: '🍽️', title: 'Order Food', subtitle: 'Browse the menu & order', color: theme.brand||'var(--brand)', colorLight: theme.brandLight||'var(--brand-light)' },
     { id: 'orders', icon: '📋', title: 'My Orders', subtitle: activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length!==1?'s':''}` : 'View your order history', color: '#2D6A8F', colorLight: '#E0F0FA', badge: activeOrders.length || null },
@@ -500,11 +551,18 @@ function HomeScreen({ user, config, table, onNavigate, onLogout, orders }) {
 }
 
 // Orders Screen
-function OrdersScreen({ orders, user, onBack, onViewOrder }) {
+function OrdersScreen({ orders: initialOrders, user, onBack, onViewOrder, restaurantId }) {
   const theme = useTheme() || {};
+  const [orders, setOrders] = useState(initialOrders);
+  useEffect(() => {
+    function sync() { setOrders(DB.get('orders_'+restaurantId, [])); }
+    const t = setInterval(sync, 2000);
+    document.addEventListener('visibilitychange', sync);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', sync); };
+  }, []);
   const myOrders = orders.filter(o => o.userId === user.uid);
-  const active = myOrders.filter(o => !['paid'].includes(o.status));
-  const past = myOrders.filter(o => o.status === 'paid');
+  const active = myOrders.filter(o => !['closed'].includes(o.status));
+  const past = myOrders.filter(o => o.status === 'closed');
   return (
     <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
       <ScreenHeader title="My Orders" onBack={onBack} backLabel="Home" />
@@ -635,12 +693,10 @@ function MenuScreen({ menu, basket, onAdd, onRemove, onOpenBasket, onBack, confi
 }
 
 // Basket Screen
-function BasketScreen({ basket, onAdd, onRemove, onBack, onPlaceOrder }) {
+function BasketScreen({ basket, onAdd, onRemove, onBack, onProceedToPayment }) {
   const theme = useTheme() || {};
   const [notes, setNotes] = useState('');
-  const [loading, setLoading] = useState(false);
   const total = basket.reduce((s,i)=>s+i.price*i.qty,0);
-  async function handleOrder() { setLoading(true); await onPlaceOrder(notes); setLoading(false); }
   return (
     <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 120 }}>
       <ScreenHeader title="Your Basket" onBack={onBack} backLabel="Menu" />
@@ -674,18 +730,38 @@ function BasketScreen({ basket, onAdd, onRemove, onBack, onPlaceOrder }) {
           </Card>
         </>}
       </div>
-      {basket.length > 0 && <div style={{ position: 'fixed', bottom: 24, left: 20, right: 20 }}><Btn onClick={handleOrder} disabled={loading} size="lg" icon="🍽️">{loading?'Placing order…':'Place Order'}</Btn></div>}
+      {basket.length > 0 && <div style={{ position: 'fixed', bottom: 24, left: 20, right: 20 }}><Btn onClick={() => onProceedToPayment(notes)} size="lg" icon="💳">Pay &amp; Place Order</Btn></div>}
     </div>
   );
 }
 
 // Order Status Screen
-function OrderStatusScreen({ order, onPayment, onBack, onAddMore }) {
+function OrderStatusScreen({ order: initialOrder, onClose, onBack, onAddMore, restaurantId }) {
   const theme = useTheme() || {};
-  const steps = ['pending','confirmed','preparing','ready','served'];
+  const [order, setOrder] = useState(initialOrder);
+
+  // Always read the latest from DB — no stale closure issues
+  function syncOrder() {
+    const all = DB.get('orders_' + restaurantId, []);
+    const fresh = all.find(o => o.id === initialOrder.id);
+    if (fresh) setOrder(fresh);
+  }
+
+  useEffect(() => {
+    // Poll every 2 seconds
+    const t = setInterval(syncOrder, 2000);
+    // Also sync immediately when the tab becomes visible again
+    document.addEventListener('visibilitychange', syncOrder);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', syncOrder);
+    };
+  }, []);
+
+  const steps = ['pending','confirmed','preparing','ready_to_serve','served'];
   const idx = steps.indexOf(order.status);
-  const icons = { pending:'📋', confirmed:'✅', preparing:'👨‍🍳', ready:'🔔', served:'🍽️' };
-  const labels = { pending:'Order received', confirmed:'Order confirmed', preparing:'Being prepared', ready:'Ready!', served:'Served & enjoyed' };
+  const icons = { pending:'📋', confirmed:'✅', preparing:'👨‍🍳', ready_to_serve:'🚀', served:'🍽️' };
+  const labels = { pending:'Order received', confirmed:'Order confirmed', preparing:'Being prepared', ready_to_serve:'Ready to serve', served:'Served & enjoyed' };
   return (
     <div className="fade-up" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
       <ScreenHeader title={`Order #${order.orderNumber}`} onBack={onBack} backLabel="Orders" />
@@ -712,8 +788,17 @@ function OrderStatusScreen({ order, onPayment, onBack, onAddMore }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}><span>Total</span><span style={{ color: theme.brand||'var(--brand)' }}>{fmt(order.items.reduce((s,i)=>s+i.price*i.qty,0))}</span></div>
         </Card>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {order.status === 'served' && <Btn onClick={onPayment} icon="💳">Request Bill & Pay</Btn>}
-          <Btn onClick={onAddMore} variant="ghost" icon="➕">Add More Items</Btn>
+          {order.status === 'served' && (
+            <div style={{ background: '#D4F5E3', border: '1px solid #3DAB6E', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+              <span style={{ fontSize: 22 }}>🍽️</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#1A7A47' }}>Your food has been served!</div>
+                <div style={{ fontSize: 13, color: '#1A7A47', opacity: 0.8 }}>Close this order to move it to history.</div>
+              </div>
+            </div>
+          )}
+          {order.status === 'served' && <Btn onClick={onClose} variant="success" icon="✅">Close Order</Btn>}
+          {order.status !== 'served' && <Btn onClick={onAddMore} variant="ghost" icon="➕">Add More Items</Btn>}
         </div>
       </div>
     </div>
@@ -721,14 +806,14 @@ function OrderStatusScreen({ order, onPayment, onBack, onAddMore }) {
 }
 
 // Payment Screen
-function PaymentScreen({ order, onBack, onSuccess }) {
+function PaymentScreen({ basket, notes, onBack, onSuccess }) {
   const theme = useTheme() || {};
   const [method, setMethod] = useState('card');
   const [cardNum, setCardNum] = useState('');
   const [expiry, setExpiry] = useState('');
   const [cvv, setCvv] = useState('');
   const [loading, setLoading] = useState(false);
-  const total = order.items.reduce((s,i)=>s+i.price*i.qty,0);
+  const total = basket.reduce((s,i)=>s+i.price*i.qty,0);
   async function pay() { setLoading(true); await new Promise(r=>setTimeout(r,2200)); onSuccess(); setLoading(false); }
   return (
     <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 120 }}>
@@ -765,9 +850,9 @@ function PaymentSuccessScreen({ order, onDone }) {
     <div className="fade-up" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center' }}>
       <div style={{ fontSize: 80, marginBottom: 16 }}>🎉</div>
       <h2 style={{ fontFamily: 'Playfair Display', fontSize: 28, marginBottom: 8 }}>Payment Successful!</h2>
-      <p style={{ color: 'var(--text2)', fontSize: 15, marginBottom: 8 }}>Thank you for dining with us.</p>
-      <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 32 }}>Order #{order.orderNumber} is now closed.</p>
-      <Btn onClick={onDone} size="lg">Back to Home</Btn>
+      <p style={{ color: 'var(--text2)', fontSize: 15, marginBottom: 8 }}>Your order has been sent to the kitchen!</p>
+      <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 32 }}>Order #{order.orderNumber} — sit back and enjoy.</p>
+      <Btn onClick={onDone} size="lg">Track My Order</Btn>
     </div>
   );
 }
@@ -797,7 +882,7 @@ function StaffDashboard({ onExit, restaurantId, config }) {
   }
 
   const pendingCalls = calls.filter(c=>c.status==='pending');
-  const displayed = filter==='active' ? orders.filter(o=>o.status!=='paid') : orders.filter(o=>o.status==='paid');
+  const displayed = filter==='active' ? orders.filter(o=>o.status!=='closed') : orders.filter(o=>o.status==='closed');
   const brand = theme.brand||'var(--brand)';
 
   return (
@@ -811,7 +896,7 @@ function StaffDashboard({ onExit, restaurantId, config }) {
       </div>
       {/* Tabs */}
       <div style={{ display: 'flex', background: '#fff', borderBottom: '1px solid var(--border)' }}>
-        {[['active','Active Orders'],['history','History'],['calls','🛎️ Waiter Needed']].map(([val,label]) => (
+        {[['active','Active Orders'],['history','Closed Orders'],['calls','🛎️ Waiter Needed']].map(([val,label]) => (
           <button key={val} onClick={()=>setFilter(val)} style={{ flex: 1, padding: '14px 6px', border: 'none', background: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans', borderBottom: filter===val?`3px solid ${brand}`:'3px solid transparent', color: filter===val?brand:'var(--text2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
             {label}
             {val==='calls' && pendingCalls.length>0 && <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{pendingCalls.length}</span>}
@@ -839,7 +924,7 @@ function StaffDashboard({ onExit, restaurantId, config }) {
       {/* Orders tabs */}
       {filter!=='calls' && (
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {displayed.length===0 && <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text2)' }}><div style={{ fontSize: 48, marginBottom: 12 }}>✅</div><p>{filter==='active'?'No active orders':'No paid orders yet'}</p></div>}
+          {displayed.length===0 && <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text2)' }}><div style={{ fontSize: 48, marginBottom: 12 }}>✅</div><p>{filter==='active'?'No active orders':'No closed orders yet'}</p></div>}
           {displayed.map(order => (
             <Card key={order.id} style={{ padding: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -849,10 +934,15 @@ function StaffDashboard({ onExit, restaurantId, config }) {
               <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>{new Date(order.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}{order.notes&&<span style={{ marginLeft: 8 }}>📝 {order.notes}</span>}</div>
               {order.items.map(item => <div key={item.id} style={{ fontSize: 14, marginBottom: 4, display: 'flex', gap: 8 }}><span>{item.emoji}</span><span>{item.qty}x {item.name}</span><span style={{ color: 'var(--text2)', marginLeft: 'auto' }}>{fmt(item.price*item.qty)}</span></div>)}
               <div style={{ height: 1, background: 'var(--border)', margin: '12px 0' }} />
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: nextStatus[order.status] ? 10 : 0 }}>
                 <span style={{ fontWeight: 700, color: brand }}>{fmt(order.items.reduce((s,i)=>s+i.price*i.qty,0))}</span>
-                {nextStatus[order.status] && <button onClick={()=>updateStatus(order.id,nextStatus[order.status])} style={{ background: brand, color: '#fff', border: 'none', borderRadius: 10, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{nextLabel[order.status]} →</button>}
+                <Badge color={statusColor[order.status]||'gray'}>{statusLabel[order.status]}</Badge>
               </div>
+              {nextStatus[order.status] && (
+                <button onClick={()=>updateStatus(order.id,nextStatus[order.status])} style={{ width: '100%', padding: '13px 16px', background: order.status==='ready_to_serve'?'var(--success)':brand, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  Mark as {nextLabel[order.status]}
+                </button>
+              )}
             </Card>
           ))}
         </div>
@@ -1035,29 +1125,27 @@ function RestaurantApp({ restaurantId, table, onExit }) {
   function addToBasket(item) { setBasket(prev => { const ex=prev.find(b=>b.id===item.id); if(ex) return prev.map(b=>b.id===item.id?{...b,qty:b.qty+1}:b); return [...prev,{...item,qty:1}]; }); }
   function removeFromBasket(id) { setBasket(prev => { const ex=prev.find(b=>b.id===id); if(ex?.qty===1) return prev.filter(b=>b.id!==id); return prev.map(b=>b.id===id?{...b,qty:b.qty-1}:b); }); }
 
-  async function placeOrder(notes) {
+  // Called after payment succeeds — basket+notes come from payment screen
+  function placeOrderAfterPayment(paidBasket, notes) {
     const num = Math.floor(1000+Math.random()*9000);
-    const order = { id: DB.id(), orderNumber: num, restaurantId, table, userId: user?.uid||'guest', items: basket, notes, status: 'pending', createdAt: new Date().toISOString() };
+    const order = { id: DB.id(), orderNumber: num, restaurantId, table, userId: user?.uid||'guest', items: paidBasket, notes, status: 'pending', createdAt: new Date().toISOString(), paid: true };
     const all = DB.get('orders_'+restaurantId, []); all.push(order);
     DB.set('orders_'+restaurantId, all); setOrders([...all]);
-    setCurrentOrder(order); setBasket([]); setScreen('orderStatus');
-    showToast('Order placed! 🎉', 'success');
-    ['confirmed','preparing','ready'].forEach((status, i) => {
-      setTimeout(() => {
-        const upd = DB.get('orders_'+restaurantId,[]).map(o=>o.id===order.id?{...o,status}:o);
-        DB.set('orders_'+restaurantId, upd); setOrders([...upd]);
-        setCurrentOrder(prev=>prev?.id===order.id?{...prev,status}:prev);
-      }, 6000+i*8000);
-    });
+    setCurrentOrder(order); setBasket([]); setScreen('paySuccess');
+    showToast('Payment successful! Order sent to kitchen 🎉', 'success');
   }
 
-  function completePayment() {
-    const upd = DB.get('orders_'+restaurantId,[]).map(o=>o.id===currentOrder.id?{...o,status:'paid'}:o);
+  function closeOrder() {
+    const upd = DB.get('orders_'+restaurantId,[]).map(o=>o.id===currentOrder.id?{...o,status:'closed'}:o);
     DB.set('orders_'+restaurantId, upd); setOrders([...upd]);
-    setCurrentOrder(prev=>({...prev,status:'paid'})); setScreen('paySuccess');
+    setCurrentOrder(prev=>({...prev,status:'closed'})); setScreen('orders');
+    showToast('Order closed and moved to history', 'success');
   }
 
-  const isUserScreen = user && !['welcome','auth','staff','adminLogin','admin','paySuccess'].includes(screen);
+  // Basket notes/items held temporarily for payment hand-off
+  const [pendingNotes, setPendingNotes] = useState('');
+
+  const isUserScreen = user && !['welcome','auth','staff','adminLogin','admin'].includes(screen);
   const freshConfig = DB.get('config_'+restaurantId, config);
 
   return (
@@ -1076,13 +1164,13 @@ function RestaurantApp({ restaurantId, table, onExit }) {
         {screen==='welcome' && <WelcomeScreen config={freshConfig} table={table} onGuest={()=>{setUser({uid:'guest',name:'Guest',isGuest:true});setScreen('home');}} onLogin={()=>setScreen('auth')} />}
         {screen==='auth' && <AuthScreen onBack={()=>setScreen('welcome')} onSuccess={u=>{setUser(u);setScreen('home');}} config={freshConfig} />}
         {screen==='home' && user && <HomeScreen user={user} config={freshConfig} table={table} onNavigate={id=>setScreen(id==='menu'?'menu':id==='orders'?'orders':'profile')} onLogout={()=>{setUser(null);setBasket([]);setCurrentOrder(null);setScreen('welcome');}} orders={orders} />}
-        {screen==='orders' && user && <OrdersScreen orders={orders} user={user} onBack={()=>setScreen('home')} onViewOrder={o=>{setCurrentOrder(o);setScreen('orderStatus');}} />}
+        {screen==='orders' && user && <OrdersScreen orders={orders} user={user} restaurantId={restaurantId} onBack={()=>setScreen('home')} onViewOrder={o=>{setCurrentOrder(o);setScreen('orderStatus');}} />}
         {screen==='profile' && user && !user.isGuest && <ProfileScreen user={user} onBack={()=>setScreen('home')} onSave={u=>setUser(u)} onLogout={()=>{setUser(null);setBasket([]);setScreen('welcome');}} config={freshConfig} />}
         {screen==='menu' && user && <MenuScreen menu={menu} basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onOpenBasket={()=>setScreen('basket')} onBack={()=>setScreen('home')} config={freshConfig} />}
-        {screen==='basket' && user && <BasketScreen basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onBack={()=>setScreen('menu')} onPlaceOrder={placeOrder} />}
-        {screen==='orderStatus' && currentOrder && <OrderStatusScreen order={currentOrder} onPayment={()=>setScreen('payment')} onBack={()=>setScreen('orders')} onAddMore={()=>setScreen('menu')} />}
-        {screen==='payment' && currentOrder && <PaymentScreen order={currentOrder} onBack={()=>setScreen('orderStatus')} onSuccess={completePayment} />}
-        {screen==='paySuccess' && currentOrder && <PaymentSuccessScreen order={currentOrder} onDone={()=>{setCurrentOrder(null);setScreen('home');}} />}
+        {screen==='basket' && user && <BasketScreen basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onBack={()=>setScreen('menu')} onProceedToPayment={(notes)=>{ setPendingNotes(notes); setScreen('payment'); }} />}
+        {screen==='orderStatus' && currentOrder && <OrderStatusScreen order={currentOrder} restaurantId={restaurantId} onClose={closeOrder} onBack={()=>setScreen('orders')} onAddMore={()=>setScreen('menu')} />}
+        {screen==='payment' && <PaymentScreen basket={basket} notes={pendingNotes} onBack={()=>setScreen('basket')} onSuccess={()=>placeOrderAfterPayment(basket, pendingNotes)} />}
+        {screen==='paySuccess' && currentOrder && <PaymentSuccessScreen order={currentOrder} onDone={()=>setScreen('orderStatus')} />}
         {screen==='staff' && <StaffDashboard onExit={()=>setScreen('welcome')} restaurantId={restaurantId} config={freshConfig} />}
         {screen==='adminLogin' && <AdminLogin config={freshConfig} onSuccess={()=>setScreen('admin')} onBack={()=>setScreen('welcome')} />}
         {screen==='admin' && <AdminPanel config={freshConfig} restaurantId={restaurantId} onExit={()=>setScreen('welcome')} />}
