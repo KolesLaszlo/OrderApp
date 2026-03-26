@@ -115,6 +115,7 @@ Object.values(RESTAURANTS_REGISTRY).forEach(r => {
   if (!DB.get('menu_'+r.id, null)) DB.set('menu_'+r.id, DEFAULT_MENUS[r.id]);
 });
 
+
 // ─── CONTEXTS ──────────────────────────────────────────────────────────────────
 const ThemeCtx = createContext(null);
 const useTheme = () => useContext(ThemeCtx);
@@ -211,9 +212,26 @@ function CallWaiterFAB({ table, restaurantId }) {
   const [state, setState] = useState('idle');
   const [miniToast, setMiniToast] = useState(false);
   const lastClickTime = useRef(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // Poll DB: if waiter dismisses the call, reset FAB back to idle
+  useEffect(() => {
+    function syncDismissal() {
+      if (stateRef.current !== 'called' && stateRef.current !== 'cancel_confirm') return;
+      const calls = DB.get('waiter_calls_'+restaurantId, []);
+      const myCall = calls.find(c => c.table === table && c.status === 'pending');
+      if (!myCall) {
+        // Our call was dismissed by staff — reset to idle
+        setState('idle');
+        lastClickTime.current = null;
+      }
+    }
+    const t = setInterval(syncDismissal, 2000);
+    return () => clearInterval(t);
+  }, []);
 
   function cancelWaiter() {
-    // Remove pending call from DB so staff dashboard clears it
     const calls = DB.get('waiter_calls_'+restaurantId, []);
     const updated = calls.map(c => c.table === table && c.status === 'pending' ? { ...c, status: 'cancelled' } : c);
     DB.set('waiter_calls_'+restaurantId, updated);
@@ -236,10 +254,8 @@ function CallWaiterFAB({ table, restaurantId }) {
       const now = Date.now();
       const diff = lastClickTime.current ? now - lastClickTime.current : Infinity;
       if (diff <= 5000) {
-        // Second tap within 5 seconds — show cancel confirm dialog
         setState('cancel_confirm');
       } else {
-        // Tapped again after 5 seconds — just show "coming right away"
         setMiniToast(true);
         setTimeout(() => setMiniToast(false), 2500);
         lastClickTime.current = now;
@@ -450,7 +466,7 @@ function AuthScreen({ onBack, onSuccess, config }) {
     setError(''); setLoading(true);
     await new Promise(r => setTimeout(r, 400));
     try {
-      const users = DB.get('users_'+config.id, {});
+      const users = DB.get('x_platform_users', {});
       if (mode === 'login') {
         const u = Object.values(users).find(u => u.email === email && u.password === password);
         if (!u) throw new Error('Invalid email or password');
@@ -460,7 +476,7 @@ function AuthScreen({ onBack, onSuccess, config }) {
         if (Object.values(users).find(u => u.email === email)) throw new Error('Email already registered');
         const uid = DB.id();
         users[uid] = { uid, email, password, name };
-        DB.set('users_'+config.id, users);
+        DB.set('x_platform_users', users);
         onSuccess({ uid, email, name, isGuest: false });
       }
     } catch (e) { setError(e.message); }
@@ -504,84 +520,295 @@ function WelcomeScreen({ config, table, onGuest, onLogin }) {
   );
 }
 
-// Home Screen
-function HomeScreen({ user, config, table, onNavigate, onLogout, orders }) {
+// Main Screen — menu with hamburger drawer
+function MainScreen({ user, config, table, menu, basket, onAdd, onRemove, onOpenBasket, onNavigate, onLogout }) {
   const theme = useTheme() || {};
-  const myOrders = orders.filter(o => o.userId === user.uid);
-  const activeOrders = myOrders.filter(o => !['closed'].includes(o.status));
-  const items = [
-    { id: 'menu', icon: '🍽️', title: 'Order Food', subtitle: 'Browse the menu & order', color: theme.brand||'var(--brand)', colorLight: theme.brandLight||'var(--brand-light)' },
-    { id: 'orders', icon: '📋', title: 'My Orders', subtitle: activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length!==1?'s':''}` : 'View your order history', color: '#2D6A8F', colorLight: '#E0F0FA', badge: activeOrders.length || null },
-    ...(!user.isGuest ? [{ id: 'profile', icon: '👤', title: 'My Profile', subtitle: user.email || '', color: '#5B4E9E', colorLight: '#EDE9FA' }] : []),
-  ];
+  const brand = theme.brand || 'var(--brand)';
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [activeCategory, setActiveCategory] = useState(null);
+  const categories = [...new Set(menu.filter(i=>i.available).map(i=>i.category))];
+  const basketCount = basket.reduce((s,i)=>s+i.qty,0);
+  const basketTotal = basket.reduce((s,i)=>s+i.price*i.qty,0);
+
+  useEffect(() => { if (categories.length && !activeCategory) setActiveCategory(categories[0]); }, [menu]);
+
+  // Live active orders count
+  const [activeOrderCount, setActiveOrderCount] = useState(0);
+  useEffect(() => {
+    function countOrders() {
+      const n = Object.keys(RESTAURANTS_REGISTRY).flatMap(rid =>
+        DB.get('orders_'+rid,[]).filter(o => o.userId === user.uid && o.status !== 'closed')
+      ).length;
+      setActiveOrderCount(n);
+    }
+    countOrders();
+    const t = setInterval(countOrders, 3000);
+    return () => clearInterval(t);
+  }, []);
+
   return (
-    <div className="fade-up" style={{ minHeight: '100vh', background: 'var(--surface)' }}>
-      <div style={{ background: '#fff', padding: '28px 20px 24px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ fontSize: 34 }}>{config.logo}</span>
-            <div>
-              <h1 style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700 }}>{config.name}</h1>
-              <div style={{ fontSize: 13, color: 'var(--text2)', marginTop: 3 }}>🪑 Table {table}</div>
+    <div style={{ minHeight: '100vh', paddingBottom: 100, background: 'var(--surface)' }}>
+
+      {/* Drawer overlay */}
+      {drawerOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 400 }}>
+          <div onClick={() => setDrawerOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+          <div className="slide-in" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '78%', maxWidth: 320, background: '#fff', display: 'flex', flexDirection: 'column', zIndex: 401, boxShadow: '4px 0 32px rgba(0,0,0,0.18)' }}>
+            {/* Drawer header */}
+            <div style={{ padding: '48px 24px 24px', background: `linear-gradient(160deg, ${brand}, ${theme.brandDark||brand})` }}>
+              <div style={{ fontSize: 38, marginBottom: 10 }}>{config.logo}</div>
+              <div style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 2 }}>
+                {user.isGuest ? 'Hello, Guest!' : `Hi, ${user.name}!`}
+              </div>
+              {!user.isGuest && <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>{user.email}</div>}
+              <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.2)', borderRadius: 20, padding: '4px 12px' }}>
+                <span style={{ fontSize: 13 }}>🪑</span>
+                <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>{config.name} · Table {table}</span>
+              </div>
+            </div>
+            {/* Drawer nav items */}
+            <div style={{ flex: 1, padding: '16px 0', overflowY: 'auto' }}>
+              <button onClick={() => { setDrawerOpen(false); onNavigate('orders'); }} style={{ width: '100%', padding: '16px 24px', background: 'none', border: 'none', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+                <div style={{ width: 40, height: 40, borderRadius: 12, background: '#E0F0FA', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>📋</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>My Orders</div>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 1 }}>{activeOrderCount > 0 ? `${activeOrderCount} active` : 'Order history'}</div>
+                </div>
+                {activeOrderCount > 0 && <span style={{ background: '#2D6A8F', color: '#fff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700 }}>{activeOrderCount}</span>}
+                <span style={{ color: 'var(--text2)', fontSize: 18 }}>›</span>
+              </button>
+              {!user.isGuest && (
+                <button onClick={() => { setDrawerOpen(false); onNavigate('profile'); }} style={{ width: '100%', padding: '16px 24px', background: 'none', border: 'none', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: '#EDE9FA', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>👤</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>My Profile</div>
+                    <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 1 }}>Personal details & billing</div>
+                  </div>
+                  <span style={{ color: 'var(--text2)', fontSize: 18 }}>›</span>
+                </button>
+              )}
+            </div>
+            {/* Sign out */}
+            <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => { setDrawerOpen(false); onLogout(); }} style={{ width: '100%', padding: '13px 16px', background: 'var(--surface2)', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 600, color: 'var(--text2)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontFamily: 'DM Sans' }}>
+                🚪 {user.isGuest ? 'Exit' : 'Sign Out'}
+              </button>
             </div>
           </div>
-          <button onClick={onLogout} style={{ background: 'var(--surface2)', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 13, color: 'var(--text2)', cursor: 'pointer', fontWeight: 500 }}>{user.isGuest ? 'Exit' : 'Sign out'}</button>
         </div>
-        <div style={{ marginTop: 18, padding: '14px 16px', background: `linear-gradient(135deg, ${theme.brand||'var(--brand)'}, ${theme.brandDark||'var(--brand-dark)'})`, borderRadius: 14, color: '#fff' }}>
-          <div style={{ fontSize: 13, opacity: 0.8 }}>Welcome{user.isGuest?'':','}</div>
-          <div style={{ fontFamily: 'Playfair Display', fontSize: 22, fontWeight: 700 }}>{user.isGuest ? 'Enjoy your meal! 🍴' : `${user.name} 👋`}</div>
+      )}
+
+      {/* Sticky header */}
+      <div style={{ background: '#fff', padding: '14px 16px 0', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          {/* Hamburger */}
+          <button onClick={() => setDrawerOpen(true)} style={{ width: 40, height: 40, borderRadius: 11, background: 'var(--surface2)', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5, flexShrink: 0 }}>
+            <span style={{ width: 18, height: 2, background: 'var(--text)', borderRadius: 2, display: 'block' }} />
+            <span style={{ width: 18, height: 2, background: 'var(--text)', borderRadius: 2, display: 'block' }} />
+            <span style={{ width: 18, height: 2, background: 'var(--text)', borderRadius: 2, display: 'block' }} />
+          </button>
+          {/* Title */}
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontFamily: 'Playfair Display', fontSize: 17, fontWeight: 700, lineHeight: 1.2 }}>{config.name}</div>
+            <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 1 }}>🪑 Table {table}</div>
+          </div>
+          {/* Basket icon button */}
+          <button onClick={onOpenBasket} style={{ width: 40, height: 40, borderRadius: 11, background: basketCount > 0 ? brand : 'var(--surface2)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, position: 'relative', transition: 'background .2s' }}>
+            🛒
+            {basketCount > 0 && (
+              <span style={{ position: 'absolute', top: -4, right: -4, background: 'var(--danger)', color: '#fff', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>{basketCount}</span>
+            )}
+          </button>
+        </div>
+        {/* Category tabs */}
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12, scrollbarWidth: 'none' }}>
+          {categories.map(cat => (
+            <button key={cat} onClick={() => setActiveCategory(cat)} style={{ whiteSpace: 'nowrap', padding: '7px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none', background: activeCategory===cat ? brand : 'var(--surface2)', color: activeCategory===cat ? '#fff' : 'var(--text2)', transition: 'all .2s', flexShrink: 0 }}>{cat}</button>
+          ))}
         </div>
       </div>
-      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>What would you like to do?</p>
-        {items.map(item => (
-          <button key={item.id} onClick={() => onNavigate(item.id)} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', width: '100%', textAlign: 'left', boxShadow: 'var(--shadow)' }}>
-            <div style={{ width: 52, height: 52, borderRadius: 14, background: item.colorLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, flexShrink: 0 }}>{item.icon}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 3 }}>{item.title}</div>
-              <div style={{ fontSize: 13, color: 'var(--text2)' }}>{item.subtitle}</div>
-            </div>
-            {item.badge > 0 && <div style={{ background: item.color, color: '#fff', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>{item.badge}</div>}
-            <span style={{ color: 'var(--text2)', fontSize: 20 }}>›</span>
-          </button>
-        ))}
+
+      {/* Menu items */}
+      <div style={{ padding: '16px 16px 0' }}>
+        <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, marginBottom: 16 }}>{activeCategory}</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {menu.filter(i=>i.category===activeCategory&&i.available).map(item => {
+            const inB = basket.find(b=>b.id===item.id);
+            return (
+              <Card key={item.id} style={{ padding: 16 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <div style={{ fontSize: 44, lineHeight: 1 }}>{item.emoji}</div>
+                  <div style={{ flex: 1 }}>
+                    <h4 style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{item.name}</h4>
+                    <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.4 }}>{item.description}</p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontFamily: 'Playfair Display', fontSize: 18, fontWeight: 700, color: brand }}>{fmt(item.price)}</span>
+                      {inB ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <button onClick={()=>onRemove(item.id)} style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--surface2)', border: 'none', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                          <span style={{ fontWeight: 700, fontSize: 16, minWidth: 20, textAlign: 'center' }}>{inB.qty}</span>
+                          <button onClick={()=>onAdd(item)} style={{ width: 32, height: 32, borderRadius: 10, background: brand, border: 'none', fontSize: 18, cursor: 'pointer', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                        </div>
+                      ) : (
+                        <button onClick={()=>onAdd(item)} style={{ background: brand, color: '#fff', border: 'none', borderRadius: 12, padding: '8px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Add</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
 }
 
-// Orders Screen
-function OrdersScreen({ orders: initialOrders, user, onBack, onViewOrder, restaurantId }) {
+// Orders Screen — platform-level: shows orders from ALL restaurants for this user
+function OrdersScreen({ user, onBack, onViewOrder }) {
   const theme = useTheme() || {};
-  const [orders, setOrders] = useState(initialOrders);
+  const brand = theme.brand || 'var(--brand)';
+
+  // Collect orders from every known restaurant
+  function fetchAllMyOrders() {
+    return Object.keys(RESTAURANTS_REGISTRY).flatMap(rid =>
+      DB.get('orders_'+rid, []).filter(o => o.userId === user.uid)
+    );
+  }
+
+  const [allOrders, setAllOrders] = useState(fetchAllMyOrders);
+  const [tab, setTab] = useState('active');
+  const [sortBy, setSortBy] = useState('time'); // 'time' | 'restaurant'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+
+  // Poll all restaurants every 2s
   useEffect(() => {
-    function sync() { setOrders(DB.get('orders_'+restaurantId, [])); }
+    function sync() { setAllOrders(fetchAllMyOrders()); }
     const t = setInterval(sync, 2000);
     document.addEventListener('visibilitychange', sync);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', sync); };
   }, []);
-  const myOrders = orders.filter(o => o.userId === user.uid);
-  const active = myOrders.filter(o => !['closed'].includes(o.status));
-  const past = myOrders.filter(o => o.status === 'closed');
+
+  const active = allOrders.filter(o => !['closed'].includes(o.status));
+  const history = allOrders.filter(o => o.status === 'closed');
+
+  function getRestaurantName(rid) {
+    const cfg = DB.get('config_'+rid, RESTAURANTS_REGISTRY[rid]);
+    return cfg ? cfg.name : rid;
+  }
+  function getRestaurantLogo(rid) {
+    const cfg = DB.get('config_'+rid, RESTAURANTS_REGISTRY[rid]);
+    return cfg ? cfg.logo : '🍽️';
+  }
+
+  function applySort(list) {
+    if (sortBy === 'time') return [...list].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+    if (sortBy === 'restaurant') return [...list].sort((a,b) => getRestaurantName(a.restaurantId).localeCompare(getRestaurantName(b.restaurantId)));
+    return list;
+  }
+
+  function applySearch(list) {
+    if (!searchQuery.trim()) return list;
+    const q = searchQuery.toLowerCase();
+    return list.filter(o =>
+      getRestaurantName(o.restaurantId).toLowerCase().includes(q) ||
+      String(o.orderNumber).includes(q) ||
+      o.items.some(i => i.name.toLowerCase().includes(q))
+    );
+  }
+
+  const displayedActive = applySort(active);
+  const displayedHistory = applySearch(applySort(history));
+
+  function OrderCard({ o, clickable }) {
+    const restaurantName = getRestaurantName(o.restaurantId);
+    const restaurantLogo = getRestaurantLogo(o.restaurantId);
+    const total = o.items.reduce((s,i)=>s+i.price*i.qty,0);
+    return (
+      <Card style={{ padding: 16, marginBottom: 10 }} onClick={clickable ? () => onViewOrder(o) : undefined}>
+        {/* Restaurant tag */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+          <span style={{ fontSize: 16 }}>{restaurantLogo}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: brand }}>{restaurantName}</span>
+          <span style={{ fontSize: 12, color: 'var(--text2)', marginLeft: 'auto' }}>Table {o.table}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <span style={{ fontWeight: 700, fontSize: 15 }}>Order #{o.orderNumber}</span>
+          <Badge color={statusColor[o.status]||'gray'}>{statusLabel[o.status]||o.status}</Badge>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>
+          {new Date(o.createdAt).toLocaleDateString([], {day:'2-digit',month:'short',year:'numeric'})} · {new Date(o.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+        </div>
+        {o.items.slice(0,2).map(i => <div key={i.id} style={{ fontSize: 13, color: 'var(--text2)' }}>{i.emoji} {i.name} ×{i.qty}</div>)}
+        {o.items.length > 2 && <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>+{o.items.length-2} more items</div>}
+        <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 700, fontSize: 15, color: brand }}>{fmt(total)}</span>
+          {clickable && <span style={{ fontSize: 13, color: brand, fontWeight: 600 }}>View →</span>}
+        </div>
+      </Card>
+    );
+  }
+
   return (
-    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
-      <ScreenHeader title="My Orders" onBack={onBack} backLabel="Home" />
-      <div style={{ padding: 16 }}>
-        {active.length > 0 && <><p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Active</p>
-          {active.map(o => <Card key={o.id} style={{ padding: 16, marginBottom: 10 }} onClick={() => onViewOrder(o)}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontWeight: 700 }}>Order #{o.orderNumber}</span><Badge color={statusColor[o.status]||'gray'}>{statusLabel[o.status]}</Badge></div>
-            <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Table {o.table} · {new Date(o.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: 13, color: 'var(--text2)' }}>{o.items.length} item{o.items.length!==1?'s':''}</span><span style={{ fontWeight: 700, color: theme.brand||'var(--brand)' }}>{fmt(o.items.reduce((s,i)=>s+i.price*i.qty,0))}</span></div>
-          </Card>)}</>}
-        {past.length > 0 && <><p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '16px 0 10px' }}>Past Orders</p>
-          {past.map(o => <Card key={o.id} style={{ padding: 16, marginBottom: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontWeight: 700 }}>Order #{o.orderNumber}</span><Badge color="success">Paid</Badge></div>
-            <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>{new Date(o.createdAt).toLocaleDateString()} · Table {o.table}</div>
-            {o.items.slice(0,2).map(i=><div key={i.id} style={{ fontSize: 13, color: 'var(--text2)' }}>{i.emoji} {i.name} x{i.qty}</div>)}
-            {o.items.length>2 && <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>+{o.items.length-2} more</div>}
-            <div style={{ marginTop: 8, fontWeight: 700, color: theme.brand||'var(--brand)' }}>{fmt(o.items.reduce((s,i)=>s+i.price*i.qty,0))}</div>
-          </Card>)}</>}
-        {myOrders.length === 0 && <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text2)' }}><div style={{ fontSize: 48, marginBottom: 16 }}>📋</div><p style={{ fontWeight: 600, marginBottom: 6 }}>No orders yet</p><p style={{ fontSize: 13 }}>Go to Order Food to place your first order</p></div>}
+    <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 32 }}>
+      <ScreenHeader title="My Orders" onBack={onBack} backLabel="Menu" />
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', background: '#fff', borderBottom: '1px solid var(--border)' }}>
+        {[['active', 'Active Orders', active.length], ['history', 'Order History', null]].map(([val, label, count]) => (
+          <button key={val} onClick={() => setTab(val)} style={{ flex: 1, padding: '14px 8px', border: 'none', background: 'none', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans', borderBottom: tab===val ? `3px solid ${brand}` : '3px solid transparent', color: tab===val ? brand : 'var(--text2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            {label}
+            {count > 0 && <span style={{ background: brand, color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{count}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* History toolbar: sort + search */}
+      {tab === 'history' && (
+        <div style={{ background: '#fff', borderBottom: '1px solid var(--border)', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1, position: 'relative' }}>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: '100%', padding: '9px 32px 9px 12px', borderRadius: 10, border: '1.5px solid var(--border)', fontSize: 13, fontWeight: 600, fontFamily: 'DM Sans', background: '#fff', color: 'var(--text)', appearance: 'none', cursor: 'pointer', outline: 'none' }}>
+              <option value="time">Sort by: Date</option>
+              <option value="restaurant">Sort by: Restaurant</option>
+            </select>
+            <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: 12, color: 'var(--text2)' }}>▾</span>
+          </div>
+          <button onClick={() => { setShowSearch(s => !s); if (showSearch) setSearchQuery(''); }} style={{ width: 38, height: 38, borderRadius: 10, border: '1.5px solid var(--border)', background: showSearch ? brand : '#fff', color: showSearch ? '#fff' : 'var(--text2)', cursor: 'pointer', fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all .2s' }}>🔍</button>
+        </div>
+      )}
+
+      {/* Search input */}
+      {tab === 'history' && showSearch && (
+        <div style={{ background: '#fff', padding: '0 16px 12px', borderBottom: '1px solid var(--border)' }}>
+          <input
+            autoFocus
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search by restaurant, order #, or dish…"
+            style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: '1.5px solid var(--border)', fontSize: 14, fontFamily: 'DM Sans', outline: 'none', background: 'var(--surface2)', color: 'var(--text)' }}
+          />
+        </div>
+      )}
+
+      <div style={{ padding: '16px 16px 0' }}>
+        {/* Active orders tab */}
+        {tab === 'active' && (
+          displayedActive.length === 0
+            ? <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text2)' }}><div style={{ fontSize: 48, marginBottom: 16 }}>✅</div><p style={{ fontWeight: 600, marginBottom: 6 }}>No active orders</p><p style={{ fontSize: 13 }}>Your in-progress orders will appear here</p></div>
+            : displayedActive.map(o => <OrderCard key={o.id} o={o} clickable />)
+        )}
+
+        {/* History tab */}
+        {tab === 'history' && (
+          displayedHistory.length === 0
+            ? <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text2)' }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>{searchQuery ? '🔍' : '📋'}</div>
+                <p style={{ fontWeight: 600, marginBottom: 6 }}>{searchQuery ? 'No results found' : 'No past orders yet'}</p>
+                <p style={{ fontSize: 13 }}>{searchQuery ? `Nothing matched "${searchQuery}"` : 'Closed orders will appear here'}</p>
+              </div>
+            : displayedHistory.map(o => <OrderCard key={o.id} o={o} clickable={false} />)
+        )}
       </div>
     </div>
   );
@@ -591,20 +818,20 @@ function OrdersScreen({ orders: initialOrders, user, onBack, onViewOrder, restau
 function ProfileScreen({ user, onBack, onSave, onLogout, config }) {
   const theme = useTheme() || {};
   const [name, setName] = useState(user.name || '');
-  const [phone, setPhone] = useState(() => (DB.get('users_'+config.id,{})[user.uid]||{}).phone || '');
-  const [billing, setBilling] = useState(() => (DB.get('users_'+config.id,{})[user.uid]||{}).billing || '');
+  const [phone, setPhone] = useState(() => (DB.get('x_platform_users', {})[user.uid]||{}).phone || '');
+  const [billing, setBilling] = useState(() => (DB.get('x_platform_users', {})[user.uid]||{}).billing || '');
   const [saved, setSaved] = useState(false);
 
   function handleSave() {
-    const users = DB.get('users_'+config.id, {});
+    const users = DB.get('x_platform_users', {});
     users[user.uid] = { ...users[user.uid], name, phone, billing };
-    DB.set('users_'+config.id, users);
+    DB.set('x_platform_users', users);
     onSave({ ...user, name });
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
   return (
     <div className="slide-in" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 40 }}>
-      <ScreenHeader title="My Profile" onBack={onBack} backLabel="Home" />
+      <ScreenHeader title="My Profile" onBack={onBack} backLabel="Menu" />
       <div style={{ padding: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 28 }}>
           <div style={{ width: 80, height: 80, borderRadius: '50%', background: `linear-gradient(135deg, ${theme.brand||'var(--brand)'}, ${theme.brandDark||'var(--brand-dark)'})`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 10, color: '#fff', fontFamily: 'Playfair Display', fontSize: 32, fontWeight: 700 }}>{(name||'G')[0].toUpperCase()}</div>
@@ -625,69 +852,6 @@ function ProfileScreen({ user, onBack, onSave, onLogout, config }) {
         <Btn onClick={handleSave} style={{ marginBottom: 12 }}>Save Changes</Btn>
         <Btn onClick={onLogout} variant="ghost" icon="🚪">Sign Out</Btn>
       </div>
-    </div>
-  );
-}
-
-// Menu Screen
-function MenuScreen({ menu, basket, onAdd, onRemove, onOpenBasket, onBack, config }) {
-  const theme = useTheme() || {};
-  const [activeCategory, setActiveCategory] = useState(null);
-  const categories = [...new Set(menu.filter(i=>i.available).map(i=>i.category))];
-  const basketCount = basket.reduce((s,i)=>s+i.qty,0);
-  const basketTotal = basket.reduce((s,i)=>s+i.price*i.qty,0);
-  useEffect(() => { if (categories.length && !activeCategory) setActiveCategory(categories[0]); }, [menu]);
-  return (
-    <div style={{ minHeight: '100vh', paddingBottom: 100, background: 'var(--surface)' }}>
-      <div style={{ background: '#fff', padding: '16px 20px 0', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <BackBtn onClick={onBack} label="Home" />
-          <h2 style={{ fontFamily: 'Playfair Display', fontSize: 20, fontWeight: 700, flex: 1 }}>Menu</h2>
-        </div>
-        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 14, scrollbarWidth: 'none' }}>
-          {categories.map(cat => <button key={cat} onClick={() => setActiveCategory(cat)} style={{ whiteSpace: 'nowrap', padding: '8px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none', background: activeCategory===cat?(theme.brand||'var(--brand)'):'var(--surface2)', color: activeCategory===cat?'#fff':'var(--text2)', transition: 'all .2s' }}>{cat}</button>)}
-        </div>
-      </div>
-      <div style={{ padding: '16px 16px 0' }}>
-        <h3 style={{ fontFamily: 'Playfair Display', fontSize: 22, marginBottom: 16 }}>{activeCategory}</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {menu.filter(i=>i.category===activeCategory&&i.available).map(item => {
-            const inB = basket.find(b=>b.id===item.id);
-            return (
-              <Card key={item.id} style={{ padding: 16 }}>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                  <div style={{ fontSize: 44, lineHeight: 1 }}>{item.emoji}</div>
-                  <div style={{ flex: 1 }}>
-                    <h4 style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{item.name}</h4>
-                    <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.4 }}>{item.description}</p>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontFamily: 'Playfair Display', fontSize: 18, fontWeight: 700, color: theme.brand||'var(--brand)' }}>{fmt(item.price)}</span>
-                      {inB ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <button onClick={()=>onRemove(item.id)} style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--surface2)', border: 'none', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                          <span style={{ fontWeight: 700, fontSize: 16, minWidth: 20, textAlign: 'center' }}>{inB.qty}</span>
-                          <button onClick={()=>onAdd(item)} style={{ width: 32, height: 32, borderRadius: 10, background: theme.brand||'var(--brand)', border: 'none', fontSize: 18, cursor: 'pointer', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
-                        </div>
-                      ) : (
-                        <button onClick={()=>onAdd(item)} style={{ background: theme.brand||'var(--brand)', color: '#fff', border: 'none', borderRadius: 12, padding: '8px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Add</button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      </div>
-      {basketCount > 0 && (
-        <div className="fade-up" style={{ position: 'fixed', bottom: 24, left: 20, right: 92, zIndex: 100 }}>
-          <button onClick={onOpenBasket} style={{ width: '100%', padding: '16px 24px', background: theme.brand||'var(--brand)', color: '#fff', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', cursor: 'pointer', fontFamily: 'DM Sans' }}>
-            <span style={{ background: 'rgba(255,255,255,0.25)', borderRadius: 8, padding: '2px 10px', fontSize: 14 }}>{basketCount}</span>
-            <span>View Basket</span>
-            <span>{fmt(basketTotal)}</span>
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -736,7 +900,7 @@ function BasketScreen({ basket, onAdd, onRemove, onBack, onProceedToPayment }) {
 }
 
 // Order Status Screen
-function OrderStatusScreen({ order: initialOrder, onClose, onBack, onAddMore, restaurantId }) {
+function OrderStatusScreen({ order: initialOrder, onBack, onAddMore, restaurantId }) {
   const theme = useTheme() || {};
   const [order, setOrder] = useState(initialOrder);
 
@@ -758,10 +922,10 @@ function OrderStatusScreen({ order: initialOrder, onClose, onBack, onAddMore, re
     };
   }, []);
 
-  const steps = ['pending','confirmed','preparing','ready_to_serve','served'];
+  const steps = ['pending','confirmed','preparing','ready_to_serve','closed'];
   const idx = steps.indexOf(order.status);
-  const icons = { pending:'📋', confirmed:'✅', preparing:'👨‍🍳', ready_to_serve:'🚀', served:'🍽️' };
-  const labels = { pending:'Order received', confirmed:'Order confirmed', preparing:'Being prepared', ready_to_serve:'Ready to serve', served:'Served & enjoyed' };
+  const icons = { pending:'📋', confirmed:'✅', preparing:'👨‍🍳', ready_to_serve:'🚀', closed:'🎉' };
+  const labels = { pending:'Order received', confirmed:'Order confirmed', preparing:'Being prepared', ready_to_serve:'Ready to serve', closed:'Order complete' };
   return (
     <div className="fade-up" style={{ minHeight: '100vh', background: 'var(--surface)', paddingBottom: 24 }}>
       <ScreenHeader title={`Order #${order.orderNumber}`} onBack={onBack} backLabel="Orders" />
@@ -788,17 +952,16 @@ function OrderStatusScreen({ order: initialOrder, onClose, onBack, onAddMore, re
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}><span>Total</span><span style={{ color: theme.brand||'var(--brand)' }}>{fmt(order.items.reduce((s,i)=>s+i.price*i.qty,0))}</span></div>
         </Card>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {order.status === 'served' && (
-            <div style={{ background: '#D4F5E3', border: '1px solid #3DAB6E', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-              <span style={{ fontSize: 22 }}>🍽️</span>
+          {order.status === 'closed' && (
+            <div style={{ background: '#D4F5E3', border: '1px solid #3DAB6E', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 22 }}>🎉</span>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 14, color: '#1A7A47' }}>Your food has been served!</div>
-                <div style={{ fontSize: 13, color: '#1A7A47', opacity: 0.8 }}>Close this order to move it to history.</div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#1A7A47' }}>Order complete!</div>
+                <div style={{ fontSize: 13, color: '#1A7A47', opacity: 0.8 }}>This order has been closed and saved to your history.</div>
               </div>
             </div>
           )}
-          {order.status === 'served' && <Btn onClick={onClose} variant="success" icon="✅">Close Order</Btn>}
-          {order.status !== 'served' && <Btn onClick={onAddMore} variant="ghost" icon="➕">Add More Items</Btn>}
+          {order.status !== 'closed' && <Btn onClick={onAddMore} variant="ghost" icon="➕">Add More Items</Btn>}
         </div>
       </div>
     </div>
@@ -873,8 +1036,38 @@ function StaffDashboard({ onExit, restaurantId, config }) {
   }, []);
 
   function updateStatus(id, status) {
-    const updated = DB.get('orders_'+restaurantId,[]).map(o=>o.id===id?{...o,status}:o);
+    // When staff marks as served, automatically close the order
+    const finalStatus = status === 'served' ? 'closed' : status;
+    const updated = DB.get('orders_'+restaurantId,[]).map(o=>o.id===id?{...o,status:finalStatus}:o);
     DB.set('orders_'+restaurantId, updated); setOrders(updated);
+  }
+
+  const [editingOrder, setEditingOrder] = useState(null); // order being edited
+  const [editItems, setEditItems] = useState([]);          // mutable copy of items
+
+  function startEdit(order) {
+    setEditItems(order.items.map(i => ({...i})));
+    setEditingOrder(order);
+  }
+
+  function editQty(id, delta) {
+    setEditItems(prev => {
+      const item = prev.find(i => i.id === id);
+      if (!item) return prev;
+      const newQty = item.qty + delta;
+      if (newQty <= 0) return prev.filter(i => i.id !== id);
+      return prev.map(i => i.id === id ? {...i, qty: newQty} : i);
+    });
+  }
+
+  function saveEdit() {
+    if (editItems.length === 0) return; // don't allow empty order
+    const updated = DB.get('orders_'+restaurantId,[]).map(o =>
+      o.id === editingOrder.id ? {...o, items: editItems, editedAt: new Date().toISOString()} : o
+    );
+    DB.set('orders_'+restaurantId, updated);
+    setOrders(updated);
+    setEditingOrder(null);
   }
   function dismissCall(id) {
     const updated = DB.get('waiter_calls_'+restaurantId,[]).map(c=>c.id===id?{...c,status:'dismissed'}:c);
@@ -933,10 +1126,13 @@ function StaffDashboard({ onExit, restaurantId, config }) {
               </div>
               <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>{new Date(order.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}{order.notes&&<span style={{ marginLeft: 8 }}>📝 {order.notes}</span>}</div>
               {order.items.map(item => <div key={item.id} style={{ fontSize: 14, marginBottom: 4, display: 'flex', gap: 8 }}><span>{item.emoji}</span><span>{item.qty}x {item.name}</span><span style={{ color: 'var(--text2)', marginLeft: 'auto' }}>{fmt(item.price*item.qty)}</span></div>)}
+              {order.editedAt && <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 4, fontStyle: 'italic' }}>✏️ Edited {new Date(order.editedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>}
               <div style={{ height: 1, background: 'var(--border)', margin: '12px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: nextStatus[order.status] ? 10 : 0 }}>
                 <span style={{ fontWeight: 700, color: brand }}>{fmt(order.items.reduce((s,i)=>s+i.price*i.qty,0))}</span>
-                <Badge color={statusColor[order.status]||'gray'}>{statusLabel[order.status]}</Badge>
+                {filter==='history' && (
+                  <button onClick={()=>startEdit(order)} style={{ background: 'var(--surface2)', border: 'none', borderRadius: 8, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 4 }}>✏️ Edit</button>
+                )}
               </div>
               {nextStatus[order.status] && (
                 <button onClick={()=>updateStatus(order.id,nextStatus[order.status])} style={{ width: '100%', padding: '13px 16px', background: order.status==='ready_to_serve'?'var(--success)':brand, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Sans', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -947,6 +1143,38 @@ function StaffDashboard({ onExit, restaurantId, config }) {
           ))}
         </div>
       )}
+
+      {/* Edit Order Sheet */}
+      <BottomSheet open={!!editingOrder} onClose={()=>setEditingOrder(null)} title={editingOrder ? `Edit Order #${editingOrder.orderNumber}` : ''}>
+        {editingOrder && (
+          <div>
+            <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 16 }}>Modify quantities or remove items. The total updates automatically.</p>
+            {editItems.length === 0 && <p style={{ textAlign: 'center', color: 'var(--danger)', fontSize: 14, marginBottom: 16 }}>⚠️ All items removed — add at least one item before saving.</p>}
+            {editItems.map(item => (
+              <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 24, flexShrink: 0 }}>{item.emoji}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</div>
+                  <div style={{ fontSize: 13, color: 'var(--text2)' }}>{fmt(item.price)} each</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <button onClick={()=>editQty(item.id,-1)} style={{ width: 30, height: 30, borderRadius: 8, background: item.qty===1?'#FDEAE8':'var(--surface2)', border: 'none', fontSize: 16, cursor: 'pointer', color: item.qty===1?'var(--danger)':'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{item.qty===1?'🗑':'−'}</button>
+                  <span style={{ fontWeight: 700, minWidth: 20, textAlign: 'center' }}>{item.qty}</span>
+                  <button onClick={()=>editQty(item.id,1)} style={{ width: 30, height: 30, borderRadius: 8, background: brand, border: 'none', fontSize: 16, cursor: 'pointer', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 14, minWidth: 56, textAlign: 'right', color: brand }}>{fmt(item.price*item.qty)}</span>
+              </div>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 16, padding: '14px 0', borderTop: '2px solid var(--border)', marginTop: 4 }}>
+              <span>New Total</span>
+              <span style={{ color: brand }}>{fmt(editItems.reduce((s,i)=>s+i.price*i.qty,0))}</span>
+            </div>
+            <button onClick={saveEdit} disabled={editItems.length===0} style={{ width: '100%', padding: 15, background: editItems.length===0?'var(--border)':brand, color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: editItems.length===0?'not-allowed':'pointer', fontFamily: 'DM Sans', marginTop: 4 }}>
+              Save Changes
+            </button>
+          </div>
+        )}
+      </BottomSheet>
     </div>
   );
 }
@@ -1098,7 +1326,7 @@ function RestaurantApp({ restaurantId, table, onExit }) {
   const config = DB.get('config_'+restaurantId, RESTAURANTS_REGISTRY[restaurantId]);
   const theme = { brand: config.brand, brandDark: config.brandDark, brandLight: config.brandLight };
 
-  // screens: welcome | auth | home | menu | basket | orders | orderStatus | profile | payment | paySuccess | staff | adminLogin | admin
+  // screens: welcome | auth | main | basket | orders | orderStatus | profile | payment | paySuccess | staff | adminLogin | admin
   const [screen, setScreen] = useState('welcome');
   const [user, setUser] = useState(null);
   const [basket, setBasket] = useState([]);
@@ -1135,13 +1363,6 @@ function RestaurantApp({ restaurantId, table, onExit }) {
     showToast('Payment successful! Order sent to kitchen 🎉', 'success');
   }
 
-  function closeOrder() {
-    const upd = DB.get('orders_'+restaurantId,[]).map(o=>o.id===currentOrder.id?{...o,status:'closed'}:o);
-    DB.set('orders_'+restaurantId, upd); setOrders([...upd]);
-    setCurrentOrder(prev=>({...prev,status:'closed'})); setScreen('orders');
-    showToast('Order closed and moved to history', 'success');
-  }
-
   // Basket notes/items held temporarily for payment hand-off
   const [pendingNotes, setPendingNotes] = useState('');
 
@@ -1161,14 +1382,13 @@ function RestaurantApp({ restaurantId, table, onExit }) {
           </div>
         )}
 
-        {screen==='welcome' && <WelcomeScreen config={freshConfig} table={table} onGuest={()=>{setUser({uid:'guest',name:'Guest',isGuest:true});setScreen('home');}} onLogin={()=>setScreen('auth')} />}
-        {screen==='auth' && <AuthScreen onBack={()=>setScreen('welcome')} onSuccess={u=>{setUser(u);setScreen('home');}} config={freshConfig} />}
-        {screen==='home' && user && <HomeScreen user={user} config={freshConfig} table={table} onNavigate={id=>setScreen(id==='menu'?'menu':id==='orders'?'orders':'profile')} onLogout={()=>{setUser(null);setBasket([]);setCurrentOrder(null);setScreen('welcome');}} orders={orders} />}
-        {screen==='orders' && user && <OrdersScreen orders={orders} user={user} restaurantId={restaurantId} onBack={()=>setScreen('home')} onViewOrder={o=>{setCurrentOrder(o);setScreen('orderStatus');}} />}
-        {screen==='profile' && user && !user.isGuest && <ProfileScreen user={user} onBack={()=>setScreen('home')} onSave={u=>setUser(u)} onLogout={()=>{setUser(null);setBasket([]);setScreen('welcome');}} config={freshConfig} />}
-        {screen==='menu' && user && <MenuScreen menu={menu} basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onOpenBasket={()=>setScreen('basket')} onBack={()=>setScreen('home')} config={freshConfig} />}
-        {screen==='basket' && user && <BasketScreen basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onBack={()=>setScreen('menu')} onProceedToPayment={(notes)=>{ setPendingNotes(notes); setScreen('payment'); }} />}
-        {screen==='orderStatus' && currentOrder && <OrderStatusScreen order={currentOrder} restaurantId={restaurantId} onClose={closeOrder} onBack={()=>setScreen('orders')} onAddMore={()=>setScreen('menu')} />}
+        {screen==='welcome' && <WelcomeScreen config={freshConfig} table={table} onGuest={()=>{setUser({uid:'guest',name:'Guest',isGuest:true});setScreen('main');}} onLogin={()=>setScreen('auth')} />}
+        {screen==='auth' && <AuthScreen onBack={()=>setScreen('welcome')} onSuccess={u=>{setUser(u);setScreen('main');}} config={freshConfig} />}
+        {screen==='main' && user && <MainScreen user={user} config={freshConfig} table={table} menu={menu} basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onOpenBasket={()=>setScreen('basket')} onNavigate={id=>setScreen(id==='orders'?'orders':'profile')} onLogout={()=>{setUser(null);setBasket([]);setCurrentOrder(null);setScreen('welcome');}} />}
+        {screen==='orders' && user && <OrdersScreen user={user} onBack={()=>setScreen('main')} onViewOrder={o=>{setCurrentOrder(o);setScreen('orderStatus');}} />}
+        {screen==='profile' && user && !user.isGuest && <ProfileScreen user={user} onBack={()=>setScreen('main')} onSave={u=>setUser(u)} onLogout={()=>{setUser(null);setBasket([]);setScreen('welcome');}} config={freshConfig} />}
+        {screen==='basket' && user && <BasketScreen basket={basket} onAdd={addToBasket} onRemove={removeFromBasket} onBack={()=>setScreen('main')} onProceedToPayment={(notes)=>{ setPendingNotes(notes); setScreen('payment'); }} />}
+        {screen==='orderStatus' && currentOrder && <OrderStatusScreen order={currentOrder} restaurantId={restaurantId} onBack={()=>setScreen('orders')} onAddMore={()=>setScreen('main')} />}
         {screen==='payment' && <PaymentScreen basket={basket} notes={pendingNotes} onBack={()=>setScreen('basket')} onSuccess={()=>placeOrderAfterPayment(basket, pendingNotes)} />}
         {screen==='paySuccess' && currentOrder && <PaymentSuccessScreen order={currentOrder} onDone={()=>setScreen('orderStatus')} />}
         {screen==='staff' && <StaffDashboard onExit={()=>setScreen('welcome')} restaurantId={restaurantId} config={freshConfig} />}
